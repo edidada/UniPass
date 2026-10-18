@@ -33,6 +33,10 @@ hs_err_pid*
 
 /.idea/
 /target/
+**/target/
+.env
+*.p12
+*.jks
 /out/
 testjdk8.und/
 .codebuddy/
