@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: unipass-iam
+  datasource:
+    url: ${UNIPASS_DB_URL}
+    username: ${UNIPASS_DB_USER}
+    password: ${UNIPASS_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 12
+      connection-timeout: 3000
+  data:
+    redis:
+      host: ${UNIPASS_REDIS_HOST:127.0.0.1}
+      port: ${UNIPASS_REDIS_PORT:6379}
+      password: ${UNIPASS_REDIS_PASSWORD}
+      ssl:
+        enabled: ${UNIPASS_REDIS_TLS:false}
+      connect-timeout: 500ms
+      timeout: 500ms
+  session:
+    timeout: 8h
+    redis:
+      namespace: unipass:session
+      repository-type: indexed
+      configure-action: none
+server:
+  port: ${UNIPASS_PORT:8080}
+  forward-headers-strategy: none
+  servlet:
+    session:
+      cookie:
+        name: UNIPASS_SSO
+        http-only: true
+        secure: true
+        same-site: lax
+        path: /
+unipass:
+  issuer: ${UNIPASS_ISSUER}
+  signing:
+    store: ${UNIPASS_SIGNING_STORE}
+    password: ${UNIPASS_SIGNING_PASSWORD}
+    alias: ${UNIPASS_SIGNING_ALIAS}
+  password:
+    history-verified: ${UNIPASS_PASSWORD_HISTORY_VERIFIED:false}
+    reset-history-verified: ${UNIPASS_RESET_HISTORY_VERIFIED:false}

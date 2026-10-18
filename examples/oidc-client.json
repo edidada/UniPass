@@ -1,0 +1,8 @@
+{
+  "client_id": "crm-web",
+  "name": "CRM Web BFF",
+  "kind": "CONFIDENTIAL",
+  "redirect_uris": ["https://crm.example.com/login/oauth2/code/unipass"],
+  "post_logout_redirect_uris": ["https://crm.example.com/"],
+  "scopes": ["openid", "profile", "api.read"]
+}

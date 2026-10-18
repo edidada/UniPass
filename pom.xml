@@ -9,9 +9,11 @@
     <module>iam-directory</module>
     <module>iam-identity</module>
     <module>iam-password</module>
+    <module>iam-server</module>
   </modules>
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
+    <maven.compiler.parameters>true</maven.compiler.parameters>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.13.4</junit.version>
   </properties>

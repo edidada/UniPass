@@ -1,4 +1,4 @@
-# 第一阶段依赖基线
+# 分阶段依赖基线
 
 2026-10-18 锁定；具体来源为 Maven Central 与各依赖 POM，未声明为最新版本。生产部署前仍需安全扫描与支持周期复核。
 
@@ -15,7 +15,24 @@
 | Embedded PG binaries BOM | 17.6.0 | 测试数据库 PostgreSQL 17.6 | PostgreSQL 及分发组件许可证 |
 | compiler / surefire / failsafe / shade 插件 | 3.14.1 / 3.5.4 / 3.5.4 / 3.6.1 | 编译、测试、打包 | Apache-2.0 |
 
-当前阶段未使用 Spring，不提前冻结 T2 的 Spring 协议栈。LDAP 网关通过接口隔离，T2 可在 Spring 运行时直接复用。JDK 17 是兼容构建下限，未修改生产 JDK 21 建议。
+上述为 P1/P2 领域库的显式基线。JDK 17 是兼容构建下限，未修改生产 JDK 21 建议。
+
+## P2 服务运行时
+
+`iam-server` 导入 Spring Boot **3.5.16** 官方 BOM；其传递依赖会覆盖领域库的间接运行时版本。2026-10-18 已从实际打包的 `BOOT-INF/lib` 核对：
+
+| 组件 | 服务运行时版本 | 用途 |
+|---|---|---|
+| Spring Authorization Server | 1.5.8 | OAuth/OIDC 协议 |
+| Spring Security | 6.5.11 | 认证、过滤器与 JWT |
+| Spring Session core/data-redis | 3.5.7 | Redis 会话 |
+| UnboundID LDAP SDK | 7.0.4 | 领域网关在服务中的运行版本 |
+| Flyway core/database-postgresql | 11.7.2 | V1–V3 服务迁移 |
+| PostgreSQL JDBC | 42.7.11 | PG 连接 |
+| Jackson databind/core | 2.21.4 | JSON 及框架授权持久化 |
+| Tomcat embedded | 10.1.55 | HTTP 容器 |
+
+Spring 组件、Flyway、Jackson、Tomcat 为 Apache-2.0；JDBC 与 LDAP 许可见上表。服务可执行包 classifier 为 `exec`，测试库不打包；领域库与服务 BOM 运行时均由各自集成测试覆盖。支持截止日期、安全扫描、生产镜像摘要仍未取证，不把当前能构建解释为已通过生产安全审查。
 
 运行库采用 POM 显式版本，测试库不进入可执行 JAR。传递依赖以 Maven 解析为准；实施升级时执行 `mvn dependency:tree` 并归档扫描结果。当前尚未执行漏洞扫描、生产镜像构建或支持周期审核，没有生产镜像摘要。
 
