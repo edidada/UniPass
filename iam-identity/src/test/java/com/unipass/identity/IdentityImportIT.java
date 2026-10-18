@@ -155,7 +155,7 @@ class IdentityImportIT {
         var p = imports.preview("hr", "", "1", List.of(row("E001", first, "ACTIVE", 1)));
         String javaCommand = java.nio.file.Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
         for (List<String> args : List.of(List.of("migrate"), List.of("report", p.batchId().toString()))) {
-            List<String> command = new ArrayList<>(List.of(javaCommand, "-jar", "target/iam-identity-0.1.0-SNAPSHOT.jar")); command.addAll(args);
+            List<String> command = new ArrayList<>(List.of(javaCommand, "-jar", "target/iam-identity-0.1.0-SNAPSHOT-cli.jar")); command.addAll(args);
             ProcessBuilder pb = new ProcessBuilder(command).redirectErrorStream(true);
             pb.environment().keySet().removeIf(key -> key.startsWith("UNIPASS_"));
             pb.environment().put("UNIPASS_DB_URL", db.url());

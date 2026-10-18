@@ -133,6 +133,35 @@ public final class LdapDirectoryGateway implements DirectoryGateway {
         return new DirectoryFailure(rc == ResultCode.TIMEOUT || rc == ResultCode.SERVER_DOWN
                 || rc == ResultCode.CONNECT_ERROR || rc == ResultCode.LOCAL_ERROR ? UNKNOWN_WRITE : REJECTED);
     }
+    @Override public Optional<String> passwordVersion(String stableId) {
+        DirectoryUser user = findByStableId(stableId).orElseThrow(() -> new DirectoryFailure(REJECTED));
+        String attribute = config.type() == DirectoryConfig.Type.AD ? "pwdLastSet" : "pwdChangedTime";
+        try (LDAPConnection c = connect(config.readDn(), config.readPassword())) {
+            assertIdentity(c, user);
+            SearchResultEntry entry = c.getEntry(user.dn(), attribute);
+            return Optional.ofNullable(entry == null ? null : entry.getAttributeValue(attribute));
+        } catch (LDAPException e) { throw new DirectoryFailure(UNAVAILABLE); }
+    }
+    @Override public boolean supportsPasswordReset() { return true; }
+    @Override public void resetPassword(String stableId, char[] newPassword) {
+        requireWriter();
+        if (newPassword == null || newPassword.length == 0) throw new IllegalArgumentException("New password required");
+        DirectoryUser user = findByStableId(stableId).orElseThrow(() -> new DirectoryFailure(REJECTED));
+        try (LDAPConnection c = connect(config.writeDn(), config.writePassword())) {
+            assertIdentity(c, user);
+            if (config.type() == DirectoryConfig.Type.AD) {
+                byte[] value = quoted(newPassword);
+                try {
+                    ModifyRequest request = new ModifyRequest(user.dn(), new Modification(ModificationType.REPLACE, "unicodePwd", value));
+                    request.addControl(new com.unboundid.ldap.sdk.controls.AssertionRequestControl(anchorFilter(user.stableId())));
+                    c.modify(request);
+                } finally { Arrays.fill(value, (byte) 0); }
+            } else {
+                ExtendedResult result = c.processExtendedOperation(new PasswordModifyExtendedRequest(user.dn(), null, new String(newPassword)));
+                if (result.getResultCode() != ResultCode.SUCCESS) throw new LDAPException(result.getResultCode());
+            }
+        } catch (LDAPException e) { throw writeFailure(e); }
+    }
     private static byte[] quoted(char[] value) { return ("\"" + new String(value) + "\"").getBytes(StandardCharsets.UTF_16LE); }
     static byte[] guidBytes(UUID id) {
         byte[] bytes = new byte[16];

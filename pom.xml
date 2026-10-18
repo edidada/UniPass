@@ -8,6 +8,7 @@
   <modules>
     <module>iam-directory</module>
     <module>iam-identity</module>
+    <module>iam-password</module>
   </modules>
   <properties>
     <maven.compiler.release>17</maven.compiler.release>

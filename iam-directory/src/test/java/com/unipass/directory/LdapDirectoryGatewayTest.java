@@ -68,6 +68,13 @@ class LdapDirectoryGatewayTest {
         assertTrue(gateway.findByStableId(id).orElseThrow().disabled());
         assertFalse(gateway.verifyCredential(id, "second-test-password".toCharArray()));
     }
+    @Test void administrativeResetUsesSeparateWriterAndDoesNotRequireOldPassword() {
+        assertTrue(gateway.supportsPasswordReset());
+        gateway.resetPassword(id, "reset-test-password".toCharArray());
+        assertTrue(gateway.verifyCredential(id, "reset-test-password".toCharArray()));
+        assertFalse(gateway.verifyCredential(id, "first-test-password".toCharArray()));
+        assertTrue(gateway.passwordVersion(id).isEmpty()); // no ppolicy overlay in the SDK test server
+    }
     @Test void refusesPlaintextAnonymousWritesAndUntrustedCertificate() {
         assertThrows(IllegalArgumentException.class, () -> new DirectoryConfig(URI.create("ldap://localhost"), "dc=x", "r", "p", null, null, DirectoryConfig.Type.OPENLDAP, false));
         var readonly = new DirectoryConfig(config.endpoint(), config.baseDn(), config.readDn(), config.readPassword(), null, null, config.type(), false);
