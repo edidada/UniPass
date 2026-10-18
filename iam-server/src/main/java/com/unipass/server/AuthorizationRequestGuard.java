@@ -11,7 +11,8 @@ import java.util.List;
 final class AuthorizationRequestGuard extends OncePerRequestFilter {
     private final RegisteredClientRepository clients;
     private final AccountState accounts;
-    AuthorizationRequestGuard(RegisteredClientRepository clients, AccountState accounts) { this.clients = clients; this.accounts = accounts; }
+    private final MfaService mfa;
+    AuthorizationRequestGuard(RegisteredClientRepository clients, AccountState accounts, MfaService mfa) { this.clients = clients; this.accounts = accounts; this.mfa=mfa; }
     @Override protected boolean shouldNotFilter(HttpServletRequest request) { return !request.getServletPath().equals("/oauth/authorize"); }
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
         boolean invalid = false;
@@ -30,6 +31,11 @@ final class AuthorizationRequestGuard extends OncePerRequestFilter {
         var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         if (authentication != null && authentication.getPrincipal() instanceof IdentityPrincipal principal && accounts.mustChange(principal.getUserId())) {
             response.setStatus(403); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"password_change_required\"}"); return;
+        }
+        if (authentication != null && authentication.getPrincipal() instanceof IdentityPrincipal principal && mfa.required(principal) && !mfa.recent(principal)) {
+            java.util.UUID context=java.util.UUID.randomUUID();request.getSession().setAttribute(MfaController.CONTEXT,context);
+            response.setStatus(401);response.setContentType("application/json");
+            response.getWriter().write("{\"error\":\"mfa_required\",\"context\":\""+context+"\"}");return;
         }
         chain.doFilter(request, response);
     }

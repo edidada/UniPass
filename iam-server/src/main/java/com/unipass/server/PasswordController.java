@@ -12,7 +12,8 @@ import java.util.*;
 @RestController
 public class PasswordController {
     private final PasswordChangeService passwords;
-    public PasswordController(PasswordChangeService passwords) { this.passwords = passwords; }
+    private final MfaService mfa;
+    public PasswordController(PasswordChangeService passwords, MfaService mfa) { this.passwords = passwords; this.mfa=mfa; }
     public static final class PasswordRequest {
         @com.fasterxml.jackson.annotation.JsonProperty("old_password") @Size(min=1, max=1024) public char[] oldPassword;
         @com.fasterxml.jackson.annotation.JsonProperty("new_password") @Size(min=1, max=1024) public char[] newPassword;
@@ -27,9 +28,16 @@ public class PasswordController {
     }
     @PostMapping("/api/password/change") ResponseEntity<PasswordOperation> change(@AuthenticationPrincipal IdentityPrincipal principal,
             @RequestHeader("Idempotency-Key") String key, @Valid @RequestBody PasswordRequest request) {
-        AuthenticatedActor actor = AuthenticatedActor.user(principal.getUserId(), principal.getEpoch(), principal.getAuthenticatedAt());
-        PasswordOperation operation = passwords.change(actor, key, request.oldPassword, request.newPassword, request.confirmation);
-        return ResponseEntity.status(operation.state() == PasswordOperation.State.UNKNOWN || operation.state() == PasswordOperation.State.PREPARED ? 202 : 200).body(operation);
+        try {
+            mfa.requireStrong(principal);
+            AuthenticatedActor actor = AuthenticatedActor.user(principal.getUserId(), principal.getEpoch(), principal.getAuthenticatedAt());
+            PasswordOperation operation = passwords.change(actor, key, request.oldPassword, request.newPassword, request.confirmation);
+            return ResponseEntity.status(operation.state() == PasswordOperation.State.UNKNOWN || operation.state() == PasswordOperation.State.PREPARED ? 202 : 200).body(operation);
+        } finally {
+            if(request.oldPassword!=null)Arrays.fill(request.oldPassword,'\0');
+            if(request.newPassword!=null)Arrays.fill(request.newPassword,'\0');
+            if(request.confirmation!=null)Arrays.fill(request.confirmation,'\0');
+        }
     }
     @GetMapping("/api/password/operations/{id}") PasswordOperation status(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable("id") UUID id) {
         return passwords.get(id, principal.getUserId());

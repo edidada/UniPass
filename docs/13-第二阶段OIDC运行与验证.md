@@ -1,6 +1,6 @@
 # 第二阶段 OIDC 运行与验证
 
-2026-10-18。本文记录 `iam-server` 的实际实现；M2 整体仍未验收。MFA、SAML IdP、跨端 SDK 与真实目录联调不因本文存在而视为完成。
+2026-10-18。本文记录 `iam-server` 的实际实现；M2 整体仍未验收。MFA 增量见 [挑战与验证](14-MFA挑战与验证.md)，SAML IdP、跨端 SDK 与真实目录联调仍待完成。
 
 ## 实现与约束
 
@@ -16,7 +16,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 
 密码到期标志阻止授权与换令牌，但保留已登录的改密和 CSRF 接口。本人改密状态查询允许原会话在初始认证后 5 分钟内读取自己的当前 fence 操作；其他请求拒绝旧 epoch。当前 HTTP 仅暴露本人改密与状态查询，重置验证、管理员恢复端点等待 MFA/管理权限边界接入。
 
-登录失败计数保存在 Redis：账号 5 次失败锁 30 分钟；同 IP 一分钟 20 次失败锁 10 分钟；Redis 不可用拒绝认证。IP 取直连地址，不信任转发请求头。图形验证码、MFA 与风控管理尚待实现，不能把该计数器等同于完整风控验收。
+登录失败计数保存在 Redis：账号 5 次失败锁 30 分钟；同 IP 一分钟 20 次失败锁 10 分钟；Redis 不可用拒绝认证。IP 取直连地址，不信任转发请求头。TOTP MFA 已接入授权和本人改密，图形验证码与风控管理尚待实现，不能把计数器等同于完整风控验收。
 
 ## 配置与启动
 
@@ -29,6 +29,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_REDIS_TLS` | 生产启用 TLS；默认 false 便于独立本地测试 |
 | `UNIPASS_ISSUER` | 外部固定 HTTPS issuer；不能含凭证、query、fragment |
 | `UNIPASS_SIGNING_STORE` / `UNIPASS_SIGNING_PASSWORD` / `UNIPASS_SIGNING_ALIAS` | 外置 PKCS12 文件、密码与当前 RSA alias |
+| `UNIPASS_MFA_KEY` | 必填，Base64 编码的随机 32 字节 MFA 加密 key，见 MFA 运行记录 |
 | `UNIPASS_PORT` | 默认 8080；TLS 接入与可信代理边界由部署配置负责 |
 | `UNIPASS_DIRECTORY_TYPE` | `AD` 或 `OPENLDAP` |
 | `UNIPASS_LDAP_URL` / `UNIPASS_LDAP_BASE_DN` | LDAPS 地址及搜索根 |
@@ -37,7 +38,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_LDAP_WRITABLE_CONFIRMED` | 真实写权限核验后设 true；默认 false |
 | `UNIPASS_PASSWORD_HISTORY_VERIFIED` / `UNIPASS_RESET_HISTORY_VERIFIED` | 分别核验目录用户改密与重置历史策略后设 true；默认拒绝相应写入 |
 
-目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V3；迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
+目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V4；迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
 
 ```powershell
 java -jar iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
@@ -78,4 +79,4 @@ pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable '完整路径/redi
 
 需要 JDK 17、Maven 3.9、可执行 Redis；PG 17.6 由测试库启动，Redis 由测试在随机 loopback 端口独立启动、设置随机密码且关闭持久化，退出回收自有进程。LDAP 网关测试使用本地 TLS 服务器；OIDC HTTP 用例中的目录为测试适配器，因此不能作为真实企业目录认证验收。报告保存在各模块 `target/surefire-reports`、`target/failsafe-reports`。
 
-尚需：MFA/一次性验证 HTTP、SAML IdP 能力验证、独立 RP/BFF 和移动端、JWKS 轮换、Redis 丢失/恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。
+尚需：密码重置因素验证 HTTP、MFA 受控恢复/轮换、SAML IdP 能力验证、独立 RP/BFF 和移动端、JWKS 轮换、Redis 丢失/恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。

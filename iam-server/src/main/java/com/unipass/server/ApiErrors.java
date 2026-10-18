@@ -8,6 +8,9 @@ import java.util.*;
 
 @RestControllerAdvice
 public class ApiErrors {
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class) ResponseEntity<Map<String,String>> rejected(org.springframework.web.server.ResponseStatusException error) {
+        return ResponseEntity.status(error.getStatusCode()).body(Map.of("error","REQUEST_REJECTED","trace_id",UUID.randomUUID().toString()));
+    }
     @ExceptionHandler(PasswordFailure.class) ResponseEntity<Map<String,Object>> password(PasswordFailure failure) {
         int status = switch (failure.code()) {
             case RECENT_AUTH_REQUIRED, STALE_SESSION -> 401;

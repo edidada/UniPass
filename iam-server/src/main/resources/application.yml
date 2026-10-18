@@ -35,6 +35,8 @@ server:
         same-site: lax
         path: /
 unipass:
+  mfa:
+    key: ${UNIPASS_MFA_KEY}
   issuer: ${UNIPASS_ISSUER}
   signing:
     store: ${UNIPASS_SIGNING_STORE}

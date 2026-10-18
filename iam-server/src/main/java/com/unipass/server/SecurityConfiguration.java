@@ -53,13 +53,14 @@ public class SecurityConfiguration {
     @Bean DirectoryAuthenticationProvider directoryAuthentication(DirectoryGateway directory, AccountState accounts, TransactionTemplate tx, Clock clock, LoginAttemptLimiter limiter) {
         return new DirectoryAuthenticationProvider(directory, accounts, tx, clock, limiter);
     }
-    @Bean OAuth2TokenCustomizer<JwtEncodingContext> claims(AccountState accounts, Environment env) {
+    @Bean OAuth2TokenCustomizer<JwtEncodingContext> claims(AccountState accounts, Environment env, MfaService mfa) {
         return context -> {
             if (!(context.getPrincipal().getPrincipal() instanceof IdentityPrincipal principal)) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             if (!accounts.allowed(principal.getUserId(), principal.getEpoch()) || accounts.mustChange(principal.getUserId())) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
+            if (mfa.required(principal) && principal.getMfaAt()==null) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             context.getJwsHeader().keyId(env.getRequiredProperty("unipass.signing.alias"));
             context.getClaims().subject(principal.getUserId().toString()).claim("auth_epoch", principal.getEpoch())
-                    .claim("unipass_family", context.getAuthorization().getId()).claim("amr", new ArrayList<>(List.of("pwd")));
+                    .claim("unipass_family", context.getAuthorization().getId()).claim("amr", new ArrayList<>(principal.getMfaAt()==null?List.of("pwd"):List.of("pwd","otp")));
             if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
                 context.getJwsHeader().type("at+jwt");
                 List<String> audiences = new ArrayList<>(List.of(context.getRegisteredClient().getClientId()));
@@ -90,7 +91,7 @@ public class SecurityConfiguration {
         };
     }
     @Bean @Order(1) SecurityFilterChain protocol(HttpSecurity http, DirectoryAuthenticationProvider provider, DigestAuthorizationService authorizations,
-            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService) throws Exception {
+            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa) throws Exception {
         var server = OAuth2AuthorizationServerConfigurer.authorizationServer();
         NativeRefreshSupport nativeClients = new NativeRefreshSupport(clients, clock);
         var logoutSuccess = new org.springframework.security.oauth2.server.authorization.oidc.web.authentication.OidcLogoutAuthenticationSuccessHandler();
@@ -107,7 +108,7 @@ public class SecurityConfiguration {
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login")))
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()));
         http.addFilterAfter(new SessionEpochFilter(accounts, clock), SecurityContextHolderFilter.class);
-        http.addFilterAfter(new AuthorizationRequestGuard(clients, accounts), SessionEpochFilter.class);
+        http.addFilterAfter(new AuthorizationRequestGuard(clients, accounts, mfa), SessionEpochFilter.class);
         http.addFilterAfter(new TokenTransactionFilter(tx), AuthorizationRequestGuard.class);
         return http.build();
     }

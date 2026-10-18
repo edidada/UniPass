@@ -43,6 +43,7 @@ class OidcFlowIT {
     @Autowired RegisteredClientRepository clients;
     @Autowired FakeDirectory directory;
     @Autowired DigestAuthorizationService authorizations;
+    @Autowired MfaService mfa;
     private final ObjectMapper json = new ObjectMapper();
     private UUID user;
 
@@ -81,6 +82,7 @@ class OidcFlowIT {
         props.add("server.address", () -> "127.0.0.1");
         props.add("unipass.signing.store", () -> signingStore.toString()); props.add("unipass.signing.password", () -> "test-only-password"); props.add("unipass.signing.alias", () -> "current");
         props.add("unipass.password.history-verified", () -> true);
+        props.add("unipass.mfa.key", () -> Base64.getEncoder().encodeToString(new byte[32]));
     }
     @BeforeEach void seed() {
         jdbc.execute("TRUNCATE oauth2_authorization CASCADE"); jdbc.execute("TRUNCATE import_source CASCADE");
@@ -114,14 +116,82 @@ class OidcFlowIT {
     private String code(HttpClient client,String clientId,String verifier) throws Exception {
         String path=authorize(clientId,verifier); var first=get(client,path);
         if(first.statusCode()!=302 || !first.headers().firstValue("Location").orElse("").startsWith(CALLBACK)) {
-            var page=get(client,"/login"); Matcher csrf=Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]+)\"").matcher(page.body()); assertTrue(csrf.find(),page.body());
-            var login=post(client,"/login",Map.of("username","E001","password",directory.password,"_csrf",csrf.group(1)),null); assertEquals(302,login.statusCode(),login.body());
+            login(client);
             first=get(client,path);
         }
         assertEquals(302,first.statusCode(),first.body()); String location=first.headers().firstValue("Location").orElseThrow();
         assertTrue(location.startsWith(CALLBACK),location);
         for(String pair:URI.create(location).getRawQuery().split("&")) if(pair.startsWith("code=")) return URLDecoder.decode(pair.substring(5),StandardCharsets.UTF_8);
         throw new AssertionError(location);
+    }
+    private void login(HttpClient client) throws Exception {
+        var page=get(client,"/login");Matcher csrf=Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]+)\"").matcher(page.body());assertTrue(csrf.find(),page.body());
+        var response=post(client,"/login",Map.of("username","E001","password",directory.password,"_csrf",csrf.group(1)),null);assertEquals(302,response.statusCode(),response.body());
+    }
+    private HttpResponse<String> postJson(HttpClient client,String path,Object value) throws Exception {
+        var csrf=json.readTree(get(client,"/api/session/csrf").body());
+        return client.send(HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header(csrf.get("header_name").asText(),csrf.get("token").asText())
+                .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(value))).build(),HttpResponse.BodyHandlers.ofString());
+    }
+    private String otp(byte[] secret,Instant instant) throws Exception {
+        return new com.eatthepath.otp.TimeBasedOneTimePasswordGenerator().generateOneTimePasswordString(new javax.crypto.spec.SecretKeySpec(secret,"HmacSHA1"),instant,Locale.ROOT);
+    }
+    private byte[] seedFactor() {
+        byte[] secret=new byte[20];new java.security.SecureRandom().nextBytes(secret);
+        var cipher=new MfaSecretCipher(Base64.getEncoder().encodeToString(new byte[32]));
+        jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled) VALUES (?,?,true)",user,cipher.encrypt(user,secret));return secret;
+    }
+    private IdentityPrincipal principal(){return new IdentityPrincipal(user,0,Instant.now(),List.of("ROLE_USER"));}
+    @Test void totpEnrollmentFencesOldTokensAndAuthorizationRequiresBoundMfaChallenge() throws Exception {
+        HttpClient browser=browser();var previous=tokens(browser,"web");
+        assertEquals(403,browser.send(HttpRequest.newBuilder(uri("/api/mfa/enrollment")).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString("{}")).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        var enrollment=postJson(browser,"/api/mfa/enrollment",Map.of());assertEquals(200,enrollment.statusCode(),enrollment.body());
+        var details=json.readTree(enrollment.body());byte[] raw=new org.apache.commons.codec.binary.Base32().decode(details.get("secret").asText());
+        assertFalse(Arrays.equals(raw,jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user)));
+        var confirmed=postJson(browser,"/api/mfa/enrollment/confirm",Map.of("code",otp(raw,Instant.now().minusSeconds(30))));assertEquals(200,confirmed.statusCode(),confirmed.body());
+        assertEquals(401,api(previous.get("access_token").asText()).statusCode());
+        assertEquals(401,get(browser,"/api/session/me").statusCode());login(browser);
+        var required=get(browser,authorize("web","v".repeat(64)));assertEquals(401,required.statusCode(),required.body());
+        String context=json.readTree(required.body()).get("context").asText();
+        var challenge=postJson(browser,"/api/mfa/challenges",Map.of("context",context));assertEquals(200,challenge.statusCode(),challenge.body());
+        String challengeId=json.readTree(challenge.body()).get("challenge").asText();
+        assertEquals(400,postJson(browser,"/api/mfa/verify",Map.of("context",UUID.randomUUID().toString(),"challenge",challengeId,"code",otp(raw,Instant.now()))).statusCode());
+        var verified=postJson(browser,"/api/mfa/verify",Map.of("context",context,"challenge",challengeId,"code",otp(raw,Instant.now())));assertEquals(200,verified.statusCode(),verified.body());
+        assertEquals(400,postJson(browser,"/api/mfa/verify",Map.of("context",context,"challenge",challengeId,"code",otp(raw,Instant.now()))).statusCode());
+        var strong=tokens(browser,"web");JsonNode claims=json.readTree(Base64.getUrlDecoder().decode(strong.get("id_token").asText().split("\\.")[1]));
+        assertEquals(List.of("pwd","otp"),json.convertValue(claims.get("amr"),List.class));
+        assertEquals(200,refresh("web",strong.get("refresh_token").asText()).statusCode());
+    }
+    @Test void mfaChallengeCannotMoveBetweenSessionsOrContextsAndExpires() throws Exception {
+        byte[] secret=seedFactor();var principal=principal();UUID context=UUID.randomUUID(),challenge=mfa.challenge(principal,"first-session",context);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.verifyChallenge(principal,"another-session",context,challenge,otp(secret,Instant.now())));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.verifyChallenge(principal,"first-session",UUID.randomUUID(),challenge,otp(secret,Instant.now())));
+        jdbc.update("UPDATE mfa_challenge SET expires_at=now()-interval '1 minute' WHERE id=?",challenge);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.verifyChallenge(principal,"first-session",context,challenge,otp(secret,Instant.now())));
+        UUID fresh=mfa.challenge(principal,"first-session",context);
+        String acceptedCode=otp(secret,Instant.now());assertNotNull(mfa.verifyChallenge(principal,"first-session",context,fresh,acceptedCode));
+        UUID reuse=mfa.challenge(principal,"first-session",context);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.verifyChallenge(principal,"first-session",context,reuse,acceptedCode));
+    }
+    @Test void mfaFailureLockPersistsAcrossNewChallengesAndCommitsOnRejection() throws Exception {
+        byte[] secret=seedFactor();var principal=principal();UUID context=UUID.randomUUID();
+        for(int attempt=0;attempt<5;attempt++){
+            UUID challenge=mfa.challenge(principal,"session",context);
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.verifyChallenge(principal,"session",context,challenge,"invalid"));
+        }
+        assertEquals(5,jdbc.queryForObject("SELECT failed_attempts FROM mfa_totp WHERE user_id=?",Integer.class,user));
+        UUID challenge=mfa.challenge(principal,"session",context);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.verifyChallenge(principal,"session",context,challenge,otp(secret,Instant.now())));
+        jdbc.update("UPDATE mfa_totp SET locked_until=now()-interval '1 minute' WHERE user_id=?",user);
+        assertNotNull(mfa.verifyChallenge(principal,"session",context,challenge,otp(secret,Instant.now())));
+        assertEquals(0,jdbc.queryForObject("SELECT failed_attempts FROM mfa_totp WHERE user_id=?",Integer.class,user));
+    }
+    @Test void concurrentMfaVerificationConsumesTheStepAndChallengeExactlyOnce() throws Exception {
+        byte[] secret=seedFactor();var principal=principal();UUID context=UUID.randomUUID(),challenge=mfa.challenge(principal,"session",context);String code=otp(secret,Instant.now());
+        ExecutorService pool=Executors.newFixedThreadPool(2);
+        java.util.concurrent.Callable<Boolean> action=()->{try{mfa.verifyChallenge(principal,"session",context,challenge,code);return true;}catch(org.springframework.web.server.ResponseStatusException e){return false;}};
+        try {var first=pool.submit(action);var second=pool.submit(action);assertNotEquals(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS));}
+        finally {pool.shutdownNow();}
     }
     private JsonNode tokens(HttpClient browser,String clientId) throws Exception {
         String verifier="v".repeat(64), code=code(browser,clientId,verifier);
