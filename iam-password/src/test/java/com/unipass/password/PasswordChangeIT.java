@@ -151,6 +151,7 @@ class PasswordChangeIT {
         assertEquals(RECOVERY_NOT_PERMITTED, assertThrows(PasswordFailure.class, () -> passwords.recover(AuthenticatedActor.user(admin, 0, clock.instant()), op.id(), false, "ticket:SEC-1/evidence")).code());
         assertEquals(RECOVERY_EVIDENCE_REQUIRED, assertThrows(PasswordFailure.class, () -> passwords.recover(recoveryAdmin(), op.id(), false, "")).code());
         assertEquals(REJECTED, passwords.recover(recoveryAdmin(), op.id(), false, "ticket:SEC-1/evidence").state());
+        assertEquals(REJECTED, passwords.recover(recoveryAdmin(), op.id(), false, "ticket:SEC-1/evidence").state());
         assertEquals(RECOVERY_NOT_PERMITTED, assertThrows(PasswordFailure.class, () -> passwords.recover(recoveryAdmin(), op.id(), true, "ticket:SEC-1/evidence")).code());
     }
     @Test void statusDoesNotAllowCrossUserDisclosure() {

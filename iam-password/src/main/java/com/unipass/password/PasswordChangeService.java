@@ -268,9 +268,21 @@ public final class PasswordChangeService {
         if (evidenceRef == null || !evidenceRef.matches("[a-zA-Z0-9:/_.-]{8,500}")) throw new PasswordFailure(RECOVERY_EVIDENCE_REQUIRED);
         try (Connection c = transaction()) {
             try {
+                PasswordOperation candidate = operation(c, id);
+                if (admin.userId().compareTo(candidate.userId()) < 0) { user(c, admin.userId()); user(c, candidate.userId()); }
+                else { user(c, candidate.userId()); user(c, admin.userId()); }
                 requireActive(user(c, admin.userId()), admin);
                 PasswordOperation operation = lockedOperation(c, id);
-                if (operation.state() != PasswordOperation.State.UNKNOWN) throw new PasswordFailure(RECOVERY_NOT_PERMITTED, id);
+                if (operation.state() != PasswordOperation.State.UNKNOWN) {
+                    boolean expected = operation.state() == (confirmedCommitted ? PasswordOperation.State.COMMITTED : PasswordOperation.State.REJECTED);
+                    try (PreparedStatement s = c.prepareStatement("SELECT recovered_by,recovery_evidence_ref FROM password_operation WHERE id=?")) {
+                        s.setObject(1, id); try (ResultSet r = s.executeQuery()) {
+                            r.next();
+                            if (expected && admin.userId().equals(r.getObject(1, UUID.class)) && evidenceRef.equals(r.getString(2))) { c.commit(); return operation; }
+                        }
+                    }
+                    throw new PasswordFailure(RECOVERY_NOT_PERMITTED, id);
+                }
                 try (PreparedStatement s = c.prepareStatement("SELECT lease_until FROM password_operation WHERE id=?")) {
                     s.setObject(1, id); try (ResultSet r = s.executeQuery()) {
                         r.next(); if (r.getTimestamp(1).toInstant().isAfter(clock.instant())) throw new PasswordFailure(RECOVERY_NOT_PERMITTED, id);

@@ -12,6 +12,10 @@ final class SessionEpochFilter extends OncePerRequestFilter {
     private final AccountState accounts;
     private final Clock clock;
     SessionEpochFilter(AccountState accounts, Clock clock) { this.accounts = accounts; this.clock = clock; }
+    @Override protected boolean shouldNotFilter(HttpServletRequest request) {
+        // Recovery routes use their own browser-bound capability; never trust a stale principal here.
+        return request.getServletPath().startsWith("/api/password/reset/") || request.getServletPath().equals("/api/public/csrf");
+    }
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication != null && authentication.getPrincipal() instanceof IdentityPrincipal principal) {

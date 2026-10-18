@@ -44,6 +44,11 @@ class OidcFlowIT {
     @Autowired FakeDirectory directory;
     @Autowired DigestAuthorizationService authorizations;
     @Autowired MfaService mfa;
+    @Autowired EmailRecoveryService recovery;
+    @Autowired RecoveryMailWorker mailWorker;
+    @Autowired TestMail mail;
+    @Autowired org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
+    @Autowired org.springframework.transaction.support.TransactionTemplate transactions;
     private final ObjectMapper json = new ObjectMapper();
     private UUID user;
 
@@ -83,10 +88,13 @@ class OidcFlowIT {
         props.add("unipass.signing.store", () -> signingStore.toString()); props.add("unipass.signing.password", () -> "test-only-password"); props.add("unipass.signing.alias", () -> "current");
         props.add("unipass.password.history-verified", () -> true);
         props.add("unipass.mfa.key", () -> Base64.getEncoder().encodeToString(new byte[32]));
+        props.add("unipass.jobs.enabled", () -> false);
+        props.add("unipass.password.reset-history-verified", () -> true);
     }
     @BeforeEach void seed() {
         jdbc.execute("TRUNCATE oauth2_authorization CASCADE"); jdbc.execute("TRUNCATE import_source CASCADE");
-        user=UUID.randomUUID(); directory.password=OLD;
+        user=UUID.randomUUID(); directory.password=OLD;mail.reset();
+        var resetKeys=redisTemplate.keys("unipass:reset:*");if(resetKeys!=null && !resetKeys.isEmpty())redisTemplate.delete(resetKeys);
         jdbc.update("INSERT INTO import_source(source_id,cursor_value) VALUES ('hr','1')");
         jdbc.update("INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version) VALUES (?,'E001',?,'OPENLDAP','uid=one,dc=example','Test','ACTIVE','hr',1)",user,user);
         for (String id : List.of("web", "native", "web-two")) if (clients.findByClientId(id)==null) {
@@ -132,6 +140,123 @@ class OidcFlowIT {
         var csrf=json.readTree(get(client,"/api/session/csrf").body());
         return client.send(HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header(csrf.get("header_name").asText(),csrf.get("token").asText())
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(value))).build(),HttpResponse.BodyHandlers.ofString());
+    }
+    private HttpResponse<String> recoveryJson(HttpClient client,String path,Object value,String key) throws Exception {
+        var csrf=json.readTree(get(client,"/api/public/csrf").body());
+        var request=HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header(csrf.get("header_name").asText(),csrf.get("token").asText());
+        if(key!=null)request.header("Idempotency-Key",key);
+        return client.send(request.POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(value))).build(),HttpResponse.BodyHandlers.ofString());
+    }
+    private void contact(){jdbc.update("INSERT INTO recovery_contact(user_id,email,contact_version,verified_at,evidence_ref) VALUES (?,'verified@example.test',?,now(),'ticket:verified-roster')",user,UUID.randomUUID());}
+    private String emailProof() throws Exception {
+        assertEquals(202,recoveryJson(browser(),"/api/password/reset/request",Map.of("employee_no","E001"),null).statusCode());
+        assertTrue(mailWorker.runOnce());URI link=URI.create(mail.links.get(mail.links.size()-1));assertNull(link.getRawQuery());return link.getFragment().substring("token=".length());
+    }
+    @Test void emailRecoveryDoesNotEnumerateAndBindsOneTimeGrantToVerifyingBrowser() throws Exception {
+        contact();var old=tokens(browser(),"web");HttpClient owner=browser(),stranger=browser();
+        assertEquals(403,owner.send(HttpRequest.newBuilder(uri("/api/password/reset/request")).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString("{\"employee_no\":\"E001\"}")).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        var known=recoveryJson(owner,"/api/password/reset/request",Map.of("employee_no","E001"),null);
+        var unknown=recoveryJson(stranger,"/api/password/reset/request",Map.of("employee_no","missing"),null);
+        assertEquals(202,known.statusCode());assertEquals(known.body(),unknown.body());assertTrue(mail.links.isEmpty());
+        assertTrue(mailWorker.runOnce());assertEquals(List.of("verified@example.test"),mail.recipients);
+        String proof=URI.create(mail.links.get(0)).getFragment().substring("token=".length());
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM reset_email_challenge WHERE token_digest=?",Integer.class,proof));
+        assertEquals(405,get(owner,"/api/password/reset/verify").statusCode());
+        var verified=recoveryJson(owner,"/api/password/reset/verify",Map.of("token",proof),null);assertEquals(200,verified.statusCode(),verified.body());
+        String grant=json.readTree(verified.body()).get("reset_token").asText();
+        assertEquals(400,recoveryJson(owner,"/api/password/reset/verify",Map.of("token",proof),null).statusCode());
+        var body=Map.of("reset_token",grant,"new_password",NEW,"confirm_password",NEW);String key=UUID.randomUUID().toString();
+        assertEquals(400,recoveryJson(stranger,"/api/password/reset/confirm",body,key).statusCode());
+        var changed=recoveryJson(owner,"/api/password/reset/confirm",body,key);assertEquals(200,changed.statusCode(),changed.body());
+        var replay=recoveryJson(owner,"/api/password/reset/confirm",body,key);assertEquals(200,replay.statusCode(),replay.body());assertEquals(json.readTree(changed.body()).get("id"),json.readTree(replay.body()).get("id"));
+        String operation=json.readTree(changed.body()).get("id").asText();assertEquals(200,get(owner,"/api/password/reset/operations/"+operation).statusCode());
+        assertEquals(404,get(stranger,"/api/password/reset/operations/"+operation).statusCode());
+        assertEquals(401,api(old.get("access_token").asText()).statusCode());
+        assertEquals(NEW,directory.password);
+    }
+    @Test void expiredEmailProofAndContactChangeCannotAuthorizeResetOrUseOldDeliveryTask() throws Exception {
+        contact();String expired=emailProof();jdbc.execute("UPDATE reset_email_challenge SET expires_at=now()-interval '1 second'");
+        assertEquals(400,recoveryJson(browser(),"/api/password/reset/verify",Map.of("token",expired),null).statusCode());
+        String old=emailProof();recovery.request("E001","local-test");
+        new RecoveryContactProvisioner(jdbc,transactions,Clock.systemUTC()).provision(user,"changed@example.test","ticket:verified-change");
+        assertEquals(400,recoveryJson(browser(),"/api/password/reset/verify",Map.of("token",old),null).statusCode());
+        int deliveries=mail.links.size();assertTrue(mailWorker.runOnce());assertEquals(deliveries,mail.links.size());
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM reset_mail_request WHERE state='BLOCKED'",Integer.class));
+    }
+    @Test void failedEmailDeliveryRetriesWithNewProofAndStaleLeaseCannotRecordSuccess() throws Exception {
+        contact();mail.fail=true;String old=emailProof();
+        assertEquals("PENDING",jdbc.queryForObject("SELECT state FROM reset_mail_request",String.class));
+        jdbc.execute("UPDATE reset_mail_request SET next_attempt_at=now()-interval '1 second'");assertTrue(mailWorker.runOnce());
+        String fresh=URI.create(mail.links.get(1)).getFragment().substring("token=".length());assertNotEquals(old,fresh);
+        assertEquals(400,recoveryJson(browser(),"/api/password/reset/verify",Map.of("token",old),null).statusCode());
+        mail.fail=false;mail.beforeSend=()->jdbc.update("UPDATE reset_mail_request SET lease_token=?,lease_until=now()+interval '1 minute'",UUID.randomUUID());
+        jdbc.execute("UPDATE reset_mail_request SET next_attempt_at=now()-interval '1 second'");assertTrue(mailWorker.runOnce());
+        assertEquals("RUNNING",jdbc.queryForObject("SELECT state FROM reset_mail_request",String.class));
+        jdbc.execute("UPDATE reset_mail_request SET lease_until=now()-interval '1 second',attempts=5");assertFalse(mailWorker.runOnce());
+        assertEquals("DEAD",jdbc.queryForObject("SELECT state FROM reset_mail_request",String.class));
+    }
+    @Test void concurrentEmailVerificationConsumesProofOnlyOnce() throws Exception {
+        contact();String proof=emailProof();ExecutorService pool=Executors.newFixedThreadPool(2);
+        java.util.concurrent.Callable<Boolean> verify=()->{try{recovery.verify(proof,"browser-session");return true;}catch(org.springframework.web.server.ResponseStatusException e){return false;}};
+        try {var first=pool.submit(verify);var second=pool.submit(verify);assertNotEquals(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS));}
+        finally{pool.shutdownNow();}
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM password_reset_grant",Integer.class));
+    }
+    @Test void anonymousRecoveryRateLimitReturnsSameAcceptanceWithoutExcessMailTasks() throws Exception {
+        contact();HttpClient browser=browser();
+        for(int attempt=0;attempt<6;attempt++){
+            var response=recoveryJson(browser,"/api/password/reset/request",Map.of("employee_no","E001"),null);assertEquals(202,response.statusCode(),response.body());
+        }
+        assertEquals(5,jdbc.queryForObject("SELECT count(*) FROM reset_mail_request",Integer.class));assertTrue(mail.links.isEmpty());
+    }
+    @Test void packagedContactCliRequiresVerifiedEvidenceAndFencesExistingCredentials() throws Exception {
+        Path input=Path.of("target","protocol-test","recovery-contact.json"),log=Path.of("target","protocol-test","recovery-cli.log");
+        Files.writeString(input,json.writeValueAsString(Map.of("userId",user.toString(),"email","cli-verified@example.test","evidenceRef","ticket:roster-verification")));
+        var command=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin",windows()?"java.exe":"java").toString(),
+                "-Dloader.main=com.unipass.server.RecoveryAdminCli","-cp",Path.of("target","iam-server-0.1.0-SNAPSHOT-exec.jar").toAbsolutePath().toString(),
+                "org.springframework.boot.loader.launch.PropertiesLauncher","provision-contact",input.toAbsolutePath().toString());
+        command.environment().put("UNIPASS_DB_URL",postgres.getJdbcUrl("postgres","postgres"));command.environment().put("UNIPASS_DB_USER","postgres");command.environment().put("UNIPASS_DB_PASSWORD","test");
+        Process process=command.redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try {
+            assertTrue(process.waitFor(20,TimeUnit.SECONDS));assertEquals(0,process.exitValue(),Files.readString(log));
+            assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+            assertEquals("cli-verified@example.test",jdbc.queryForObject("SELECT email FROM recovery_contact WHERE user_id=?",String.class,user));
+            assertFalse(Files.readString(log).contains("cli-verified@example.test"));
+        }finally{if(process.isAlive())process.destroyForcibly();}
+    }
+    private HttpClient administrator() throws Exception {
+        jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_PASSWORD_RESET'),(?,'ROLE_ADMIN_PASSWORD_RECOVERY')",user,user);
+        byte[] secret=seedFactor();HttpClient browser=browser();login(browser);
+        String context=json.readTree(postJson(browser,"/api/mfa/context",Map.of()).body()).get("context").asText();
+        String challenge=json.readTree(postJson(browser,"/api/mfa/challenges",Map.of("context",context)).body()).get("challenge").asText();
+        var verified=postJson(browser,"/api/mfa/verify",Map.of("context",context,"challenge",challenge,"code",otp(secret,Instant.now())));assertEquals(200,verified.statusCode(),verified.body());return browser;
+    }
+    private UUID target(){
+        UUID target=UUID.randomUUID();jdbc.update("INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version) VALUES (?,'E002',?,'OPENLDAP','uid=two,dc=example','Target','ACTIVE','hr',1)",target,target);return target;
+    }
+    @Test void administrativeResetRequiresFreshMfaAndLiveRoleAndPersistsReason() throws Exception {
+        HttpClient weak=browser();login(weak);UUID target=target();
+        var body=Map.of("reason","Helpdesk identity verified","new_password",NEW,"confirm_password",NEW);String key=UUID.randomUUID().toString();
+        assertEquals(403,recoveryJson(weak,"/api/admin/password/users/"+target+"/reset",body,key).statusCode());
+        HttpClient admin=administrator();var response=recoveryJson(admin,"/api/admin/password/users/"+target+"/reset",body,key);assertEquals(200,response.statusCode(),response.body());
+        assertTrue(jdbc.queryForObject("SELECT must_change_password FROM iam_user WHERE id=?",Boolean.class,target));
+        assertEquals("Helpdesk identity verified",jdbc.queryForObject("SELECT reason FROM admin_password_action",String.class));
+        String operation=json.readTree(response.body()).get("id").asText();assertEquals(200,get(admin,"/api/admin/password/operations/"+operation).statusCode());
+        jdbc.update("DELETE FROM iam_user_role WHERE user_id=? AND role='ROLE_ADMIN_PASSWORD_RESET'",user);
+        assertEquals(403,recoveryJson(admin,"/api/admin/password/users/"+target+"/reset",body,key).statusCode());
+    }
+    @Test void administrativeRecoveryRequiresEvidenceExpiredLeaseAndIdempotentDecision() throws Exception {
+        UUID target=target(),operation=UUID.randomUUID();HttpClient admin=administrator();
+        jdbc.update("UPDATE iam_user SET password_gate='BLOCKED',auth_epoch=1 WHERE id=?",target);
+        jdbc.update("INSERT INTO password_operation(id,user_id,idempotency_key,state,operation_type,fenced_epoch,lease_until,created_at) VALUES (?,?,'test-unknown-operation','UNKNOWN','CHANGE',1,now()+interval '1 minute',now())",operation,target);
+        String path="/api/admin/password/operations/"+operation+"/recover",key=UUID.randomUUID().toString();
+        var body=Map.of("confirmed_committed",false,"reason","Directory evidence reviewed","evidence_ref","ticket:SEC-200/evidence");
+        assertEquals(403,recoveryJson(admin,path,body,key).statusCode());
+        jdbc.update("UPDATE password_operation SET lease_until=now()-interval '1 second' WHERE id=?",operation);
+        var response=recoveryJson(admin,path,body,key);assertEquals(200,response.statusCode(),response.body());assertEquals("REJECTED",json.readTree(response.body()).get("state").asText());
+        assertEquals(200,recoveryJson(admin,path,body,key).statusCode());
+        assertEquals("OPEN",jdbc.queryForObject("SELECT password_gate FROM iam_user WHERE id=?",String.class,target));
+        assertEquals(403,recoveryJson(admin,path,Map.of("confirmed_committed",true,"reason","Contradictory decision","evidence_ref","ticket:SEC-200/evidence"),UUID.randomUUID().toString()).statusCode());
     }
     private String otp(byte[] secret,Instant instant) throws Exception {
         return new com.eatthepath.otp.TimeBasedOneTimePasswordGenerator().generateOneTimePasswordString(new javax.crypto.spec.SecretKeySpec(secret,"HmacSHA1"),instant,Locale.ROOT);
@@ -325,7 +450,16 @@ class OidcFlowIT {
     }
     static boolean windows(){return System.getProperty("os.name").startsWith("Windows");}
     static String enc(String value){return URLEncoder.encode(value,StandardCharsets.UTF_8);}
-    @TestConfiguration static class TestDirectory { @Bean FakeDirectory fakeDirectory(){return new FakeDirectory();} }
+    @TestConfiguration static class TestDirectory {
+        @Bean FakeDirectory fakeDirectory(){return new FakeDirectory();}
+        @Bean @org.springframework.context.annotation.Primary TestMail testMail(){return new TestMail();}
+    }
+    static class TestMail implements RecoveryEmailSender {
+        final List<String> links=new ArrayList<>(),recipients=new ArrayList<>();boolean fail;Runnable beforeSend=()->{};
+        void reset(){links.clear();recipients.clear();fail=false;beforeSend=()->{};}
+        public boolean available(){return true;}
+        public void send(String recipient,String link){links.add(link);recipients.add(recipient);beforeSend.run();if(fail)throw new IllegalStateException("Test transport failure");}
+    }
     static class FakeDirectory implements DirectoryGateway {
         volatile String password;
         @Override public DirectoryConfig.Type type(){return DirectoryConfig.Type.OPENLDAP;}
@@ -333,5 +467,7 @@ class OidcFlowIT {
         @Override public boolean verifyCredential(String id,char[] value){return password.equals(new String(value));}
         @Override public void changePassword(String id,char[] old,char[] next){if(!verifyCredential(id,old))throw new DirectoryFailure(DirectoryFailure.Kind.REJECTED);password=new String(next);}
         @Override public void disableUser(String id){}
+        @Override public boolean supportsPasswordReset(){return true;}
+        @Override public void resetPassword(String id,char[] next){password=new String(next);}
     }
 }

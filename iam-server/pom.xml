@@ -6,6 +6,7 @@
   <dependencies>
     <dependency><groupId>com.eatthepath</groupId><artifactId>java-otp</artifactId><version>1.0.0</version></dependency>
     <dependency><groupId>commons-codec</groupId><artifactId>commons-codec</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-mail</artifactId></dependency>
     <dependency><groupId>com.unipass</groupId><artifactId>iam-password</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-jdbc</artifactId></dependency>

@@ -32,6 +32,7 @@
 | Jackson databind/core | 2.21.4 | JSON 及框架授权持久化 |
 | Tomcat embedded | 10.1.55 | HTTP 容器 |
 | java-otp | 1.0.0 | TOTP，MIT 许可；显式锁定版本 |
+| Angus Jakarta Mail default provider | 2.0.5 | SMTP；EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0，来自实际 POM |
 
 Spring 组件、Flyway、Jackson、Tomcat 为 Apache-2.0；JDBC 与 LDAP 许可见上表。服务可执行包 classifier 为 `exec`，测试库不打包；领域库与服务 BOM 运行时均由各自集成测试覆盖。支持截止日期、安全扫描、生产镜像摘要仍未取证，不把当前能构建解释为已通过生产安全审查。
 

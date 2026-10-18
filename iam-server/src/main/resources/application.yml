@@ -1,3 +1,7 @@
+logging:
+  level:
+    org.eclipse.angus.mail: WARN
+    jakarta.mail: WARN
 spring:
   application:
     name: unipass-iam
@@ -35,6 +39,9 @@ server:
         same-site: lax
         path: /
 unipass:
+  recovery:
+    email:
+      enabled: ${UNIPASS_RECOVERY_EMAIL_ENABLED:false}
   mfa:
     key: ${UNIPASS_MFA_KEY}
   issuer: ${UNIPASS_ISSUER}

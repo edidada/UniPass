@@ -124,8 +124,9 @@ public class SecurityConfiguration {
         return http.build();
     }
     @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http, DirectoryAuthenticationProvider provider, AccountState accounts, Clock clock, LogoutService logoutService) throws Exception {
-        http.authenticationProvider(provider).authorizeHttpRequests(auth -> auth.requestMatchers("/login", "/error").permitAll().anyRequest().authenticated())
+        http.authenticationProvider(provider).authorizeHttpRequests(auth -> auth.requestMatchers("/login", "/error", "/api/public/csrf", "/api/password/reset/**").permitAll().anyRequest().authenticated())
                 .formLogin(Customizer.withDefaults()).logout(logout -> logout.addLogoutHandler((request,response,authentication) -> logoutService.browser(authentication)));
+        http.headers(headers -> headers.referrerPolicy(policy -> policy.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER)));
         http.addFilterAfter(new SessionEpochFilter(accounts, clock), SecurityContextHolderFilter.class);
         return http.build();
     }
