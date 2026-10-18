@@ -1,0 +1,363 @@
+# 企业统一登录平台（IAM/SSO）全套文档体系
+
+**文档版本**：V1.0
+**编制日期**：2026-10-18
+**适用场景**：PC Web、Windows 桌面、飞书小程序/工作台、移动 App 统一账号与密码同步
+
+
+## 1. 架构设计文档
+
+### 1.1 设计目标
+
+实现“**一个账号，全端通行；改一次密码，所有端同步生效**”。覆盖 PC Web 浏览器、Windows 域/桌面登录、飞书（小程序/工作台/H5）、移动 App（iOS/Android）四类终端。核心能力包括：统一身份目录（LDAP/AD）、单点登录（SSO）、密码集中管理与同步、多协议适配（OAuth 2.0 / OIDC / SAML 2.0 / CAS / RADIUS / LDAP）。
+
+### 1.2 总体架构分层
+
+| 层级 | 组件 | 职责 |
+|------|------|------|
+| **接入层** | Nginx / CLB | TLS 终结、限流、静态资源 |
+| **协议适配层** | OAuth2/OIDC Provider、SAML IdP、CAS Server、RADIUS Server | 面向不同终端提供标准认证协议 |
+| **核心认证层** | 认证引擎、MFA 引擎、会话管理、密码策略引擎 | 凭证校验、Token 签发、密码变更广播 |
+| **身份目录层** | LDAP / Active Directory | 唯一身份数据源（Source of Truth） |
+| **同步层** | 密码同步 Connector（飞书/钉钉/AD/自研 App） | 密码变更事件向外扩散 |
+| **管理控制台** | 用户管理、应用管理、审计日志 | 管理员操作入口 |
+
+### 1.3 关键设计决策
+
+**（1）身份唯一性**：以 HR 系统员工号或 AD `sAMAccountName` 作为全局唯一标识（`employeeNumber`），所有终端均映射至同一 LDAP DN。
+
+**（2）密码“一处修改，处处生效”的实现路径**：
+- PC Web / 飞书小程序：走 OAuth2/OIDC 认证，密码修改调用 IAM 的 Password Change API，写入 LDAP 后触发事件。
+- Windows 桌面登录：通过 AD 域控集成。若企业已有 AD，IAM 直接对接 AD；若无 AD，则部署 **AD FS** 或 **LDAP + Winlogon 凭证提供程序**，使 Windows 登录校验指向统一目录。
+- 飞书：飞书开放平台支持“账号绑定”与“密码同步”接口（通过飞书通讯录 API 或自建应用实现），IAM 在密码变更事件中调用飞书 API 更新对应成员密码/强制下线。
+- 移动 App：App 内嵌 WebView 走 OIDC 授权码流程；原生登录则调用 IAM 的 `/api/v1/authn` 接口。
+
+**（3）会话与 Token 失效**：密码修改后，IAM 发布 `password.changed` 事件，所有在线会话（Redis 中存储的 session/token）立即失效，各端下次请求时被重定向至登录页。
+
+### 1.4 协议适配矩阵
+
+| 终端 | 认证协议 | 备注 |
+|------|---------|------|
+| PC Web | OIDC / OAuth 2.0 | 浏览器重定向至 IAM 登录页 |
+| Windows 桌面 | Kerberos / LDAP / AD FS | 域内走 Kerberos，域外走 AD FS 表单 |
+| 飞书 | OAuth 2.0（飞书开放平台）+ IAM OIDC | 飞书扫码/免登 → IAM 校验 → 返回用户身份 |
+| 移动 App | OIDC + PKCE | App 内安全存储 refresh_token |
+
+
+## 2. 部署文档
+
+### 2.1 环境要求
+
+| 组件 | 规格（生产） | 数量 |
+|------|-------------|------|
+| IAM 应用节点 | 8C16G，CentOS 7.9 / Rocky 9 | 2（主备/负载均衡） |
+| LDAP / AD | 4C8G，SSD 200G | 2（主从复制） |
+| Redis（会话） | 4C8G | 3（哨兵） |
+| PostgreSQL / MySQL | 8C16G，SSD 500G | 2（主从） |
+| Nginx / LB | 4C8G | 2 |
+
+### 2.2 部署拓扑
+
+```
+[Internet/内网] → [Nginx LB :443]
+                        │
+          ┌─────────────┴─────────────┐
+          ▼                           ▼
+   [IAM Node 1]                  [IAM Node 2]
+          │                           │
+          └─────────────┬─────────────┘
+                        ▼
+              [LDAP Master] ←→ [LDAP Slave]
+                        │
+              [Redis Sentinel Cluster]
+                        │
+              [PostgreSQL Primary/Standby]
+```
+
+### 2.3 部署步骤（摘要）
+
+**步骤 1：目录服务初始化**
+- 安装 OpenLDAP 或对接现有 AD。
+- 导入 Base DN（如 `dc=corp,dc=example,dc=com`），创建 `ou=users`、`ou=groups`。
+- 从 HR 系统批量导入用户，`employeeNumber` 设为唯一属性。
+
+**步骤 2：IAM 应用部署**
+- 解压 IAM 发行包，配置 `application.yml` 中 LDAP 连接串、Redis 地址、数据库 URL。
+- 执行数据库迁移脚本 `flyway migrate`。
+- 启动两个节点，验证 `/actuator/health` 返回 `UP`。
+
+**步骤 3：Windows 集成（AD FS 模式）**
+- 在 Windows Server 上安装 AD FS 角色。
+- 配置 AD FS 信赖方信任，指向 IAM 的 SAML 元数据 URL。
+- 通过组策略推送“IE/Edge 受信任站点”及“自动登录”策略。
+
+**步骤 4：飞书集成**
+- 在飞书开放平台创建“企业自建应用”，获取 `App ID` / `App Secret`。
+- 配置 IAM 的飞书 Connector：填写 App 凭证、通讯录同步范围、事件订阅 URL（`/api/connector/feishu/event`）。
+- 申请飞书权限：`contact:user.base:readonly`、`contact:user.employee_id:readonly`。
+
+**步骤 5：负载均衡与 TLS**
+- Nginx 配置 `upstream iam_cluster`，健康检查 `/health`。
+- 强制 HTTPS，HSTS 开启，TLS 1.2+。
+
+
+## 3. 概要设计文档
+
+### 3.1 核心模块划分
+
+| 模块 | 功能 | 对外接口 |
+|------|------|---------|
+| 认证服务 | 用户名密码、OTP、扫码登录 | `/oauth/authorize`、`/api/authn` |
+| 令牌服务 | JWT 签发、刷新、吊销 | `/oauth/token`、`/oauth/revoke` |
+| 密码服务 | 密码修改、重置、策略校验 | `/api/password/change` |
+| 同步服务 | 密码变更事件分发至飞书/AD/App | 内部 Event Bus |
+| 应用管理 | 客户端注册、回调白名单 | `/admin/apps` |
+| 审计服务 | 登录日志、密码变更日志 | `/admin/audit` |
+
+### 3.2 密码修改流程（概要）
+
+1. 用户在任意端发起修改密码。
+2. IAM 校验旧密码 → 校验新密码复杂度 → 写入 LDAP。
+3. 写入成功后，IAM 发布 `PasswordChangedEvent`（含 userId、时间戳）。
+4. **同步服务**消费事件：
+   - 调用飞书 API 更新对应成员密码（或强制该成员在飞书端重新认证）。
+   - 若 Windows 走 AD FS：AD 密码已随 LDAP 更新（AD 作为目录时天然一致）。
+   - 调用移动 App 推送服务，通知 App 清除本地 token。
+5. **会话服务**吊销该用户所有 Refresh Token 和 Session。
+
+
+## 4. 详细设计文档
+
+### 4.1 认证接口详细设计（OIDC 授权码模式）
+
+**（1）授权端点** `GET /oauth/authorize`
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| response_type | 是 | 固定 `code` |
+| client_id | 是 | 应用注册时分配 |
+| redirect_uri | 是 | 必须与注册值完全匹配 |
+| scope | 是 | `openid profile email` |
+| state | 是 | CSRF 防护随机串 |
+| code_challenge | 移动端必填 | PKCE S256 |
+
+**（2）令牌端点** `POST /oauth/token`
+
+请求体（`application/x-www-form-urlencoded`）：
+```
+grant_type=authorization_code
+&code={auth_code}
+&redirect_uri={same_as_authorize}
+&client_id={client_id}
+&code_verifier={pkce_verifier}
+```
+
+响应：
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "def...",
+  "id_token": "eyJ..."
+}
+```
+
+### 4.2 密码变更同步接口（飞书）
+
+**飞书侧接口**：`PATCH /open-apis/contact/v3/users/{user_id}`
+**请求体**（由 IAM 同步服务调用）：
+```json
+{
+  "password": "{new_password_encrypted}",
+  "force_refresh": true
+}
+```
+**鉴权**：`Authorization: Bearer {tenant_access_token}`（IAM 自行管理 token 刷新）。
+
+### 4.3 数据模型（核心表）
+
+**`iam_user`**：`id`（PK）、`employee_no`（UNIQUE）、`ldap_dn`、`status`、`password_changed_at`
+
+**`sync_task`**：`id`、`user_id`、`target_system`（FEISHU/AD/APP）、`status`、`retry_count`、`created_at`
+
+**`audit_log`**：`id`、`user_id`、`action`（LOGIN/PASSWORD_CHANGE/LOGOUT）、`client_id`、`ip`、`created_at`
+
+
+## 5. PM 开发子任务规划与里程碑
+
+### 5.1 子任务分解（WBS）
+
+| 编号 | 任务 | 负责角色 | 预估人天 | 依赖 |
+|------|------|---------|---------|------|
+| T1 | LDAP/AD 目录搭建与 HR 数据导入 | 后端/运维 | 5 | — |
+| T2 | IAM 核心认证服务（OIDC/OAuth2） | 后端 | 15 | T1 |
+| T3 | 密码策略与修改接口 | 后端 | 5 | T2 |
+| T4 | Windows AD FS 部署与策略下发 | 运维/桌面 | 8 | T1 |
+| T5 | 飞书 Connector（认证+密码同步） | 后端 | 8 | T2 |
+| T6 | 移动 App SDK（OIDC + PKCE） | 移动端 | 6 | T2 |
+| T7 | PC Web 登录页与回调对接 | 前端 | 5 | T2 |
+| T8 | 审计日志与管理员控制台 | 全栈 | 8 | T2 |
+| T9 | 集成测试（四端联调） | QA | 10 | T2-T8 |
+| T10 | 安全测试（渗透+等保合规） | 安全 | 5 | T9 |
+| T11 | 灰度发布与运维交接 | 运维 | 3 | T10 |
+
+### 5.2 里程碑
+
+| 里程碑 | 交付物 | 计划时间 |
+|--------|--------|---------|
+| M1：目录就绪 | LDAP/AD 可读写，HR 数据已同步 | 第 2 周末 |
+| M2：核心认证上线 | OIDC 认证可用，PC Web 接入 | 第 5 周末 |
+| M3：全端覆盖 | Windows、飞书、App 全部接入 | 第 9 周末 |
+| M4：验收通过 | 测试报告、安全报告签字 | 第 11 周末 |
+| M5：生产全量 | 全员切换，旧登录入口关闭 | 第 12 周末 |
+
+
+## 6. 验收文档
+
+### 6.1 验收 checklist
+
+| 序号 | 验收项 | 通过标准 | 验证方式 |
+|------|--------|---------|---------|
+| A1 | PC Web 单点登录 | 登录 IAM 后，访问接入的 OA/CRM 无需二次输入密码 | 手工演示 |
+| A2 | Windows 桌面登录 | 域内用户用统一密码登录 Windows，密码与 IAM 一致 | 域内机器实测 |
+| A3 | 飞书免登 | 飞书工作台打开应用，自动识别 IAM 身份 | 飞书客户端实测 |
+| A4 | 移动 App 登录 | 使用 IAM 账号密码或生物识别（本地解锁）完成登录 | 真机测试 |
+| A5 | **密码一处修改** | 在 PC Web 修改密码后，飞书/App 下次请求被强制重新认证；Windows 新登录使用新密码 | 端到端验证 |
+| A6 | 密码策略 | 弱密码被拒绝，历史密码不可复用 | 接口测试 |
+| A7 | 审计日志 | 登录、登出、密码变更可查询，保留 ≥6 个月 | 控制台抽查 |
+| A8 | 高可用 | 单节点故障，认证服务在 30 秒内恢复 | 演练报告 |
+
+### 6.2 验收交付物清单
+
+- 《统一登录平台功能验收报告》（含 A1-A8 测试记录）
+- 《安全测试报告》（含渗透测试与等保三级符合性说明）
+- 《用户操作手册》（员工版）
+- 《管理员操作手册》
+- 《运维 SOP 确认单》
+
+
+## 7. 运维 SOP
+
+### 7.1 日常巡检（每日 09:00 前完成）
+
+| 检查项 | 命令/方法 | 正常标准 |
+|--------|----------|---------|
+| IAM 节点健康 | `curl -s https://iam.corp/actuator/health` | `{"status":"UP"}` |
+| LDAP 复制状态 | `ldapsearch -H ldaps://ldap-master -D "cn=admin" -w *** -b "cn=config" olcSyncrepl` | 从节点 `lag` < 5 秒 |
+| 认证成功率 | 查询 Prometheus `rate(iam_auth_total{result="fail"}[5m])` | 失败率 < 0.5% |
+| 飞书同步队列积压 | 查询 `sync_task where status=pending` 计数 | < 10 |
+| 磁盘使用率 | `df -h` 于应用节点 | < 75% |
+
+### 7.2 故障处理预案
+
+**场景 A：LDAP 主节点宕机**
+1. 确认从节点已提升为主（或手动切换）。
+2. 修改 IAM 配置中 LDAP URL 指向新主。
+3. 滚动重启 IAM 节点。
+4. 恢复原主节点后，重新加入复制拓扑。
+
+**场景 B：飞书密码同步失败**
+1. 检查 `sync_task` 表中 `status=failed` 的记录。
+2. 查看飞书 API 返回码：若为 `99991663`（token 过期），刷新 tenant_access_token 后重试。
+3. 若为权限不足，检查飞书应用权限是否被回收。
+4. 对失败任务执行重试：`POST /admin/sync/retry/{taskId}`。
+
+**场景 C：Windows 域用户无法登录且 IAM 密码正确**
+1. 在域控上运行 `dcdiag` 检查 AD 健康。
+2. 确认 IAM 到 AD 的 LDAP 绑定账号未过期。
+3. 检查 AD FS 信赖方信任证书是否过期（默认 1 年）。
+
+### 7.3 变更管理
+
+- 任何 IAM 配置变更（客户端密钥、回调地址、密码策略）须通过变更单审批。
+- 变更窗口：非业务高峰（建议 20:00–22:00）。
+- 变更前：备份 `application.yml`、LDAP `cn=config`、数据库 `iam_user` 表。
+- 回滚条件：认证失败率 > 5% 持续 3 分钟，立即回滚配置并重启节点。
+
+### 7.4 应急联系人
+
+| 角色 | 职责 | 联系方式 |
+|------|------|---------|
+| IAM 运维负责人 | 服务恢复 | 值班手机 |
+| 飞书管理员 | 飞书侧权限/接口问题 | 飞书内部群 |
+| Windows 域管理员 | AD/域控故障 | 分机 |
+
+
+**附：文档间关系说明**
+- 架构设计（§1）决定部署方案（§2）和概要设计（§3）。
+- 详细设计（§4）是开发依据，对应 PM 任务（§5）中的 T2–T8。
+- 验收（§6）以详细设计的接口和流程为测试基准。
+- 运维 SOP（§7）承接验收后的生产运行，重点覆盖密码同步这一跨端核心链路的故障排查。
+
+# 项目工程命名建议
+
+## 一、推荐主名称
+
+**`UniPass`**（统一通行证）
+
+- 寓意：**Uni**fied **Pass**port，一个账号通行全端
+- 简短好记，中英文皆宜，适合做产品品牌
+- 工程前缀可用 `unipass-`
+
+## 二、工程仓库/模块命名规范
+
+### 2.1 仓库命名（建议多仓库或 monorepo 二选一）
+
+| 仓库名 | 内容 | 说明 |
+|--------|------|------|
+| `unipass-iam` | 核心认证服务（OAuth2/OIDC/SAML/CAS） | 主服务，Java/Go 均可 |
+| `unipass-sync` | 密码同步服务（飞书/AD/App Connector） | 事件驱动，可独立部署 |
+| `unipass-admin` | 管理控制台前端（用户/应用/审计） | Vue/React |
+| `unipass-portal` | 统一登录页前端（登录/改密/重置） | 面向员工 |
+| `unipass-sdk-web` | PC Web 接入 SDK | JS/TS |
+| `unipass-sdk-mobile` | 移动 App 接入 SDK | iOS/Android |
+| `unipass-sdk-windows` | Windows 登录凭证提供程序（Credential Provider） | C++/C# |
+| `unipass-feishu-connector` | 飞书集成 Connector | 可并入 sync |
+| `unipass-infra` | 部署脚本、K8s Helm、Terraform | 运维 |
+| `unipass-docs` | 全套设计/验收/运维文档 | 本文档体系所在 |
+
+### 2.2 服务内部模块命名（以 `unipass-iam` 为例）
+
+```
+unipass-iam/
+├── iam-authn          # 认证引擎（密码/OTP/扫码）
+├── iam-token          # 令牌签发与吊销
+├── iam-password       # 密码策略与修改
+├── iam-session        # 会话管理（Redis）
+├── iam-protocol       # OIDC/SAML/CAS 协议适配
+├── iam-app            # 应用（客户端）注册管理
+├── iam-audit          # 审计日志
+└── iam-common         # 公共模型与工具
+```
+
+### 2.3 领域标识与命名空间
+
+| 用途 | 建议值 |
+|------|--------|
+| 域名 | `pass.corp.example.com`（登录页）/ `iam.corp.example.com`（服务） |
+| LDAP Base DN | `dc=corp,dc=example,dc=com`，用户 `ou=users` |
+| OIDC Issuer | `https://pass.corp.example.com` |
+| 数据库名 | `unipass` |
+| Redis Key 前缀 | `unipass:session:`、`unipass:token:` |
+| 事件主题 | `unipass.password.changed` |
+| K8s Namespace | `unipass` |
+| 镜像仓库 | `registry.corp.example.com/unipass/iam:1.0.0` |
+
+## 三、备选名称（如需对外品牌或避免重名）
+
+| 名称 | 含义 | 适用 |
+|------|------|------|
+| **OneID** | 一个身份 | 简洁，偏互联网风格 |
+| **PassPort / CorpPass** | 企业通行证 | 正式，偏政企 |
+| **SSO-Hub** | 单点登录中枢 | 技术直白 |
+| **Identra** | Identity + Central | 品牌化 |
+| **统一身份中台 / UIP**（Unified Identity Platform） | 中台定位 | 大型集团 |
+
+## 四、建议
+
+- **工程代码统一用 `unipass-*` 前缀**，与产品对外名“统一通行证 / UniPass”保持一致，避免代码名与产品名脱节。
+- 若公司已有命名规范（如按事业部前缀），可将 `unipass` 替换为规范前缀，但保持 `-iam / -sync / -portal / -sdk-*` 的后缀语义不变。
+- 数据库、Redis、事件主题、K8s namespace 全部收敛到 `unipass` 单一标识，便于运维检索与权限划分。
+
+**结论**：项目工程名定为 **`unipass`**，产品对外名 **“统一通行证（UniPass）”**，各子工程按 `unipass-<职责>` 命名。
