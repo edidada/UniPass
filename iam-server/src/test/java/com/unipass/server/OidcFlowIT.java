@@ -49,6 +49,8 @@ class OidcFlowIT {
     @Autowired TestMail mail;
     @Autowired org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
     @Autowired org.springframework.transaction.support.TransactionTemplate transactions;
+    @Autowired RedisSecurityState securityState;
+    @Autowired com.unipass.password.PasswordChangeService passwords;
     private final ObjectMapper json = new ObjectMapper();
     private UUID user;
 
@@ -233,6 +235,78 @@ class OidcFlowIT {
     }
     private UUID target(){
         UUID target=UUID.randomUUID();jdbc.update("INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version) VALUES (?,'E002',?,'OPENLDAP','uid=two,dc=example','Target','ACTIVE','hr',1)",target,target);return target;
+    }
+    @Test void missingRedisGenerationDeniesOldCredentialsBeforeAndAfterRecovery() throws Exception {
+        HttpClient browser=browser();var before=tokens(browser,"web");
+        redisTemplate.delete(securityState.generationKey());
+        assertEquals(401,api(before.get("access_token").asText()).statusCode());
+        assertEquals(503,get(browser,"/api/session/me").statusCode());
+        assertTrue(securityState.recoverIfNeeded());assertFalse(securityState.recoverIfNeeded());
+        assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+        assertEquals(401,api(before.get("access_token").asText()).statusCode());
+        assertEquals(400,refresh("web",before.get("refresh_token").asText()).statusCode());
+        assertEquals(401,get(browser,"/api/session/me").statusCode());
+        assertEquals(200,api(tokens(browser(),"web").get("access_token").asText()).statusCode());
+    }
+    @Test void actualRedisDataLossCannotRehabilitateJwtOrRefreshToken() throws Exception {
+        var before=tokens(browser(),"web");
+        redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Void>)connection->{connection.serverCommands().flushDb();return null;});
+        assertEquals(401,api(before.get("access_token").asText()).statusCode());
+        assertTrue(securityState.recoverIfNeeded());
+        assertEquals(401,api(before.get("access_token").asText()).statusCode());
+        assertEquals(400,refresh("web",before.get("refresh_token").asText()).statusCode());
+    }
+    @Test void redisProcessRestartIsDetectedEvenWhenGenerationMarkerIsRestored() throws Exception {
+        var before=tokens(browser(),"web");String marker=redisTemplate.opsForValue().get(securityState.generationKey());String previousRun=securityState.current().runId();
+        redis.destroy();assertTrue(redis.waitFor(10,TimeUnit.SECONDS));
+        Path root=Path.of("target","protocol-test").toAbsolutePath();
+        String executable=System.getProperty("test.redis.executable",System.getenv().getOrDefault("UNIPASS_TEST_REDIS_EXECUTABLE","redis-server"));
+        redis=new ProcessBuilder(executable,"--bind","127.0.0.1","--port",Integer.toString(redisPort),"--save","","--appendonly","no","--requirepass",redisPassword,"--dir",root.toString().replace('\\','/'))
+                .redirectErrorStream(true).redirectOutput(root.resolve("redis-restart.log").toFile()).start();
+        Process owned=redis;Runtime.getRuntime().addShutdownHook(new Thread(()->{if(owned.isAlive())owned.destroy();}));
+        boolean ready=false;
+        for(int attempt=0;attempt<100;attempt++){
+            if(!redis.isAlive())throw new IllegalStateException("Restarted Redis exited");
+            try {redisTemplate.opsForValue().set(securityState.generationKey(),marker);ready=true;break;}
+            catch(RuntimeException e){Thread.sleep(50);}
+        }
+        assertTrue(ready);assertNotEquals(previousRun,securityState.current().runId());
+        assertEquals(401,api(before.get("access_token").asText()).statusCode());
+        assertTrue(securityState.recoverIfNeeded());assertEquals(401,api(before.get("access_token").asText()).statusCode());
+        assertEquals(400,refresh("web",before.get("refresh_token").asText()).statusCode());
+    }
+    @Test void concurrentRecoveryFencesAnIdentityExactlyOnce() throws Exception {
+        tokens(browser(),"web");long baseline=jdbc.queryForObject("SELECT count(*) FROM auth_runtime_recovery",Long.class);
+        redisTemplate.delete(securityState.generationKey());ExecutorService pool=Executors.newFixedThreadPool(2);
+        try {var first=pool.submit(()->securityState.recoverIfNeeded());var second=pool.submit(()->securityState.recoverIfNeeded());assertNotEquals(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS));}
+        finally{pool.shutdownNow();}
+        assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+        assertEquals(baseline+1,jdbc.queryForObject("SELECT count(*) FROM auth_runtime_recovery",Long.class));
+    }
+    @Test void redisSideEffectFollowedByPgCommitFailureStaysDeniedUntilRecovery() throws Exception {
+        var before=tokens(browser(),"web");String original=jdbc.queryForObject("SELECT redis_generation::text FROM auth_runtime_state",String.class);
+        jdbc.execute("CREATE FUNCTION fail_auth_runtime_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test commit failure'; END $$");
+        jdbc.execute("CREATE CONSTRAINT TRIGGER fail_auth_runtime_commit AFTER UPDATE ON auth_runtime_state DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_auth_runtime_commit()");
+        redisTemplate.delete(securityState.generationKey());
+        try {
+            assertThrows(RuntimeException.class,()->securityState.recoverIfNeeded());
+            assertEquals(original,jdbc.queryForObject("SELECT redis_generation::text FROM auth_runtime_state",String.class));
+            assertNotEquals(original,redisTemplate.opsForValue().get(securityState.generationKey()));
+            assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+            assertEquals(401,api(before.get("access_token").asText()).statusCode());
+        }finally{jdbc.execute("DROP TRIGGER fail_auth_runtime_commit ON auth_runtime_state");jdbc.execute("DROP FUNCTION fail_auth_runtime_commit()");}
+        assertTrue(securityState.recoverIfNeeded());assertEquals(401,api(before.get("access_token").asText()).statusCode());
+    }
+    @Test void redisRecoveryPreservesBlockedPasswordFenceForEvidenceRecovery() throws Exception {
+        var before=tokens(browser(),"web");UUID admin=target(),operation=UUID.randomUUID();
+        jdbc.update("UPDATE iam_user SET password_gate='BLOCKED',auth_epoch=1 WHERE id=?",user);
+        jdbc.update("INSERT INTO password_operation(id,user_id,idempotency_key,state,operation_type,fenced_epoch,lease_until,created_at) VALUES (?,?,'test-blocked-fence','UNKNOWN','CHANGE',1,now()-interval '1 minute',now())",operation,user);
+        redisTemplate.delete(securityState.generationKey());assertTrue(securityState.recoverIfNeeded());
+        assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+        var actor=new com.unipass.password.AuthenticatedActor(admin,1,Instant.now(),Set.of("PASSWORD_RECOVERY"),Instant.now());
+        assertEquals(com.unipass.password.PasswordOperation.State.REJECTED,passwords.recover(actor,operation,false,"ticket:redis-incident/evidence").state());
+        assertEquals("OPEN",jdbc.queryForObject("SELECT password_gate FROM iam_user WHERE id=?",String.class,user));
+        assertEquals(401,api(before.get("access_token").asText()).statusCode());
     }
     @Test void administrativeResetRequiresFreshMfaAndLiveRoleAndPersistsReason() throws Exception {
         HttpClient weak=browser();login(weak);UUID target=target();

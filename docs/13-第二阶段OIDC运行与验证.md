@@ -8,9 +8,9 @@ Spring Boot 3.5.16 BOM 管理 Spring Authorization Server 1.5.8、Security 6.5.1
 
 授权码 60 秒、access token 1 小时、refresh token 最长距初次认证 30 天。令牌值在 PostgreSQL 仅保存 SHA-256 摘要；令牌索引保留历史摘要来定位旧 refresh token 的令牌族。令牌事务先锁身份再锁授权记录，缓冲 HTTP 响应至提交成功；并发换码仅一次成功，旧 refresh 再次使用撤销整族，错误客户端不能借他人的 refresh 吊销其族。当前未提供历史授权数据清理任务，容量治理仍待实现。
 
-RS256 密钥由外置 PKCS12 加载，当前 alias 提供私钥签名，其他 RSA alias 只提供公钥；JWKS 不输出私钥。`unipass_family` 是持久授权族标识；OIDC `sid` 保留框架生成的会话摘要，不能拿族 ID 覆盖。当前仅测试单签名 key，滚动换钥与多实例轮换证据待补。
+RS256 密钥由外置 PKCS12 加载，当前 alias 提供私钥签名，其他 RSA alias 只提供公钥；JWKS 不输出私钥，RSA 最少 2048 位。`unipass_family` 是持久授权族标识；OIDC `sid` 保留框架生成的会话摘要，不能拿族 ID 覆盖。本地重叠签名与退役已测试，多实例/RP 缓存轮换证据待补，见 [故障恢复与签名轮换](16-Redis故障恢复与签名轮换.md)。
 
-Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小时、认证起绝对 24 小时。PG 保存账号 gate 和 epoch，每次浏览器/API 请求查询，查询失败拒绝放行。密码变更、禁用及认证后全局退出使旧 epoch 失效。Redis 中会话消失需要重新登录；Redis 整库丢失后的恢复演练尚未完成。
+Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小时、认证起绝对 24 小时。PG 保存账号 gate 和 epoch，每次浏览器/API 请求检查账号及 PG/Redis 运行代次，查询失败拒绝放行。密码变更、禁用及认证后全局退出使旧 epoch 失效。Redis marker 丢失或进程变化后恢复会撤销授权族，并增加 ACTIVE/OPEN 身份 epoch；旧 JWT 与刷新令牌不能因 Redis 恢复继续使用。整库丢失与进程重启已本地演练，主备和生产恢复待验收。
 
 认证后的 `/logout` 和 RP `/oauth/logout` 执行全局退出，递增身份 epoch 并撤销该用户的授权族；未登录时经框架校验的 ID-token hint 仅撤销对应族。退出重定向必须精确注册，不能任意跳转。该实现保证 UniPass 状态拒绝旧凭证，尚不代表外部 RP 的本地页面会话或飞书会话已清理。
 
@@ -27,6 +27,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_DB_URL` / `UNIPASS_DB_USER` / `UNIPASS_DB_PASSWORD` | PG JDBC URL、用户及密码；生产 URL 使用 TLS verify-full |
 | `UNIPASS_REDIS_HOST` / `UNIPASS_REDIS_PORT` / `UNIPASS_REDIS_PASSWORD` | Redis 地址、端口及认证；密码必填 |
 | `UNIPASS_REDIS_TLS` | 生产启用 TLS；默认 false 便于独立本地测试 |
+| `UNIPASS_SESSION_NAMESPACE` / `UNIPASS_REDIS_GENERATION_KEY` | 默认会话 namespace 与安全 marker key；同一部署所有实例一致，ACL 还须允许 INFO server |
 | `UNIPASS_ISSUER` | 外部固定 HTTPS issuer；不能含凭证、query、fragment |
 | `UNIPASS_SIGNING_STORE` / `UNIPASS_SIGNING_PASSWORD` / `UNIPASS_SIGNING_ALIAS` | 外置 PKCS12 文件、密码与当前 RSA alias |
 | `UNIPASS_MFA_KEY` | 必填，Base64 编码的随机 32 字节 MFA 加密 key，见 MFA 运行记录 |
@@ -38,7 +39,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_LDAP_WRITABLE_CONFIRMED` | 真实写权限核验后设 true；默认 false |
 | `UNIPASS_PASSWORD_HISTORY_VERIFIED` / `UNIPASS_RESET_HISTORY_VERIFIED` | 分别核验目录用户改密与重置历史策略后设 true；默认拒绝相应写入 |
 
-目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V5；迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
+目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V6；迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
 
 ```powershell
 java -jar iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
@@ -79,4 +80,4 @@ pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable '完整路径/redi
 
 需要 JDK 17、Maven 3.9、可执行 Redis；PG 17.6 由测试库启动，Redis 由测试在随机 loopback 端口独立启动、设置随机密码且关闭持久化，退出回收自有进程。LDAP 网关测试使用本地 TLS 服务器；OIDC HTTP 用例中的目录为测试适配器，因此不能作为真实企业目录认证验收。报告保存在各模块 `target/surefire-reports`、`target/failsafe-reports`。
 
-尚需：短信/飞书验证适配、MFA 受控恢复/轮换、SAML IdP 能力验证、独立 RP/BFF 和移动端、JWKS 轮换、Redis 丢失/恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。
+尚需：短信/飞书验证适配、MFA 受控恢复/轮换、SAML IdP 能力验证、独立 RP/BFF 和移动端、多实例/RP 缓存签名轮换、Redis 主备恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。

@@ -53,8 +53,10 @@ public class CoreConfiguration {
             try (var input = Files.newInputStream(Path.of(env.getRequiredProperty("unipass.signing.store")))) { store.load(input, password); }
             List<JWK> keys = new ArrayList<>();
             for (String name : Collections.list(store.aliases())) {
-                if (!(store.getCertificate(name).getPublicKey() instanceof RSAPublicKey pub)) continue;
-                RSAKey.Builder builder = new RSAKey.Builder(pub).keyID(name);
+                var certificate=store.getCertificate(name);
+                if (certificate==null || !(certificate.getPublicKey() instanceof RSAPublicKey pub)) continue;
+                if(pub.getModulus().bitLength()<2048)throw new IllegalArgumentException("Signing RSA key must contain at least 2048 bits");
+                RSAKey.Builder builder = new RSAKey.Builder(pub).keyID(name).algorithm(com.nimbusds.jose.JWSAlgorithm.RS256).keyUse(KeyUse.SIGNATURE);
                 if (name.equals(alias)) builder.privateKey((RSAPrivateKey) store.getKey(name, password));
                 keys.add(builder.build());
             }
