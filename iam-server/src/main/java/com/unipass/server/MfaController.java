@@ -20,7 +20,7 @@ public class MfaController {
     public record ChallengeRequest(UUID context) { }
     public record VerifyRequest(UUID context,UUID challenge,String code) { @Override public String toString(){return "VerifyRequest[REDACTED]";} }
     @GetMapping Map<String,Object> status(@AuthenticationPrincipal IdentityPrincipal principal){
-        return Map.of("enrolled",mfa.enrolled(principal.getUserId()),"required",mfa.required(principal),"recent",mfa.recent(principal));
+        return Map.of("enrolled",mfa.enrolled(principal.getUserId()),"required",mfa.required(principal),"recent",mfa.recent(principal),"recovery_required",mfa.recoveryRequired(principal.getUserId()));
     }
     @PostMapping("/enrollment") MfaService.Enrollment enroll(@AuthenticationPrincipal IdentityPrincipal principal){return mfa.enroll(principal);}
     @PostMapping("/enrollment/confirm") Map<String,Boolean> confirm(@AuthenticationPrincipal IdentityPrincipal principal,@RequestBody Code request){

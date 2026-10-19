@@ -39,7 +39,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_LDAP_WRITABLE_CONFIRMED` | 真实写权限核验后设 true；默认 false |
 | `UNIPASS_PASSWORD_HISTORY_VERIFIED` / `UNIPASS_RESET_HISTORY_VERIFIED` | 分别核验目录用户改密与重置历史策略后设 true；默认拒绝相应写入 |
 
-目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V6；迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
+目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V7；因素恢复状态的签发限制见 [因素生命周期](18-MFA因素轮换与受控恢复.md)。迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
 
 ```powershell
 java -jar iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
@@ -80,4 +80,4 @@ pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable '完整路径/redi
 
 需要 JDK 17、Maven 3.9、可执行 Redis；PG 17.6 由测试库启动，Redis 由测试在随机 loopback 端口独立启动、设置随机密码且关闭持久化，退出回收自有进程。LDAP 网关测试使用本地 TLS 服务器；OIDC HTTP 用例中的目录为测试适配器，因此不能作为真实企业目录认证验收。报告保存在各模块 `target/surefire-reports`、`target/failsafe-reports`。
 
-尚需：短信/飞书验证适配、MFA 受控恢复/轮换、SAML IdP 能力验证、独立 RP/BFF 和移动端、多实例/RP 缓存签名轮换、Redis 主备恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。
+尚需：短信/飞书验证适配、MFA 主 key 重加密/轮换与真实恢复渠道、SAML IdP 能力验证、独立 RP/BFF 和移动端、多实例/RP 缓存签名轮换、Redis 主备恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。

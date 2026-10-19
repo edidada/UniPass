@@ -44,6 +44,7 @@ class OidcFlowIT {
     @Autowired FakeDirectory directory;
     @Autowired DigestAuthorizationService authorizations;
     @Autowired MfaService mfa;
+    @Autowired MfaLifecycleService factors;
     @Autowired EmailRecoveryService recovery;
     @Autowired RecoveryMailWorker mailWorker;
     @Autowired TestMail mail;
@@ -135,8 +136,11 @@ class OidcFlowIT {
         throw new AssertionError(location);
     }
     private void login(HttpClient client) throws Exception {
+        login(client,"E001");
+    }
+    private void login(HttpClient client,String employee) throws Exception {
         var page=get(client,"/login");Matcher csrf=Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]+)\"").matcher(page.body());assertTrue(csrf.find(),page.body());
-        var response=post(client,"/login",Map.of("username","E001","password",directory.password,"_csrf",csrf.group(1)),null);assertEquals(302,response.statusCode(),response.body());
+        var response=post(client,"/login",Map.of("username",employee,"password",directory.password,"_csrf",csrf.group(1)),null);assertEquals(302,response.statusCode(),response.body());
     }
     private HttpResponse<String> postJson(HttpClient client,String path,Object value) throws Exception {
         var csrf=json.readTree(get(client,"/api/session/csrf").body());
@@ -336,11 +340,167 @@ class OidcFlowIT {
         return new com.eatthepath.otp.TimeBasedOneTimePasswordGenerator().generateOneTimePasswordString(new javax.crypto.spec.SecretKeySpec(secret,"HmacSHA1"),instant,Locale.ROOT);
     }
     private byte[] seedFactor() {
+        return seedFactor(user);
+    }
+    private byte[] seedFactor(UUID identity) {
         byte[] secret=new byte[20];new java.security.SecureRandom().nextBytes(secret);
         var cipher=new MfaSecretCipher(Base64.getEncoder().encodeToString(new byte[32]));
-        jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled) VALUES (?,?,true)",user,cipher.encrypt(user,secret));return secret;
+        jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled) VALUES (?,?,true)",identity,cipher.encrypt(identity,secret));return secret;
     }
     private IdentityPrincipal principal(){return new IdentityPrincipal(user,0,Instant.now(),List.of("ROLE_USER"));}
+    private IdentityPrincipal strongPrincipal(){return principal().withMfa(Instant.now());}
+    private IdentityPrincipal recoveryOperator(){
+        jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_MFA_RECOVERY')",user);
+        seedFactor();return strongPrincipal();
+    }
+    private void stepUp(HttpClient client,byte[] secret,Instant at) throws Exception {
+        String context=json.readTree(postJson(client,"/api/mfa/context",Map.of()).body()).get("context").asText();
+        String challenge=json.readTree(postJson(client,"/api/mfa/challenges",Map.of("context",context)).body()).get("challenge").asText();
+        var result=postJson(client,"/api/mfa/verify",Map.of("context",context,"challenge",challenge,"code",otp(secret,at)));
+        assertEquals(200,result.statusCode(),result.body());
+    }
+    @Test void factorRotationRetainsCurrentFactorUntilConfirmationThenFencesOldCredentials() throws Exception {
+        HttpClient strong=administrator();var old=tokens(strong,"web");byte[] original=jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user);
+        HttpClient weak=browser();login(weak);assertEquals(403,postJson(weak,"/api/mfa/rotation",Map.of()).statusCode());
+        assertEquals(403,strong.send(HttpRequest.newBuilder(uri("/api/mfa/rotation")).POST(HttpRequest.BodyPublishers.ofString("{}")).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        var started=postJson(strong,"/api/mfa/rotation",Map.of());assertEquals(200,started.statusCode(),started.body());
+        assertTrue(started.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
+        var replacement=json.readTree(started.body());String path="/api/mfa/changes/"+replacement.get("id").asText()+"/confirm";
+        byte[] secret=new org.apache.commons.codec.binary.Base32().decode(replacement.get("secret").asText());
+        assertArrayEquals(original,jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user));
+        assertEquals(200,api(old.get("access_token").asText()).statusCode());
+        assertEquals(400,postJson(weak,path,Map.of("code",otp(secret,Instant.now()))).statusCode());
+        assertEquals(200,postJson(strong,path,Map.of("code",otp(secret,Instant.now()))).statusCode());
+        assertEquals(401,get(strong,"/api/session/me").statusCode());assertEquals(401,api(old.get("access_token").asText()).statusCode());
+        assertEquals(400,refresh("web",old.get("refresh_token").asText()).statusCode());
+        assertArrayEquals(secret,new MfaSecretCipher(Base64.getEncoder().encodeToString(new byte[32])).decrypt(user,jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user)));
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM mfa_factor_change WHERE state='COMMITTED' AND secret_cipher IS NULL",Integer.class));
+        HttpClient fresh=browser();login(fresh);stepUp(fresh,secret,Instant.now().plusSeconds(30));assertEquals(200,api(tokens(fresh,"web").get("access_token").asText()).statusCode());
+    }
+    @Test void factorReplacementFailuresPersistAcrossSupersedingChangesAndLockForThirtyMinutes() throws Exception {
+        seedFactor();var actor=strongPrincipal();
+        for(int attempt=0;attempt<5;attempt++){
+            var change=factors.rotate(actor,"rotation-session");
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.confirm(actor,"rotation-session",change.id(),"invalid"));
+        }
+        assertEquals(5,jdbc.queryForObject("SELECT failed_attempts FROM mfa_lifecycle_guard WHERE user_id=?",Integer.class,user));
+        var locked=assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.rotate(actor,"new-session"));assertEquals(429,locked.getStatusCode().value());
+        assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));assertTrue(mfa.enrolled(user));
+        jdbc.execute("UPDATE mfa_lifecycle_guard SET locked_until=now()-interval '1 second'");
+        var change=factors.rotate(actor,"rotation-session");byte[] secret=new org.apache.commons.codec.binary.Base32().decode(change.secret());
+        factors.confirm(actor,"rotation-session",change.id(),otp(secret,Instant.now()));
+        assertEquals(0,jdbc.queryForObject("SELECT failed_attempts FROM mfa_lifecycle_guard WHERE user_id=?",Integer.class,user));
+    }
+    @Test void replacementSupersessionCancellationExpiryAndRecencyDoNotModifyActiveFactor() {
+        seedFactor();var actor=strongPrincipal();byte[] original=jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user);
+        var first=factors.rotate(actor,"owner");var second=factors.rotate(actor,"owner");
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.confirm(actor,"owner",first.id(),"123456"));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.cancel(actor,"stranger",second.id()));factors.cancel(actor,"owner",second.id());
+        var expired=factors.rotate(actor,"owner");jdbc.update("UPDATE mfa_factor_change SET expires_at=now()-interval '1 second' WHERE id=?",expired.id());
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.confirm(actor,"owner",expired.id(),"123456"));assertEquals(1,factors.expire());
+        assertEquals(3,jdbc.queryForObject("SELECT count(*) FROM mfa_factor_change WHERE secret_cipher IS NULL",Integer.class));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.rotate(actor.withMfa(Instant.now().minusSeconds(600)),"owner"));
+        var stalePassword=new IdentityPrincipal(user,0,Instant.now().minusSeconds(600),List.of("ROLE_USER"),Instant.now());
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.rotate(stalePassword,"owner"));
+        assertArrayEquals(original,jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user));
+    }
+    @Test void concurrentFactorConfirmationCommitsOnlyOneReplacement() throws Exception {
+        seedFactor();var actor=strongPrincipal();var change=factors.rotate(actor,"owner");String code=otp(new org.apache.commons.codec.binary.Base32().decode(change.secret()),Instant.now());
+        ExecutorService pool=Executors.newFixedThreadPool(2);
+        Callable<Boolean> confirm=()->{try{factors.confirm(actor,"owner",change.id(),code);return true;}catch(org.springframework.web.server.ResponseStatusException | org.springframework.security.authentication.BadCredentialsException denied){return false;}};
+        try{var first=pool.submit(confirm);var second=pool.submit(confirm);assertNotEquals(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS));}finally{pool.shutdownNow();}
+        assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='MFA_ROTATE_COMMITTED'",Integer.class));
+    }
+    @Test void administrativeFactorRecoveryRequiresCapabilityAndNewFactorBeforeTokenIssuance() throws Exception {
+        HttpClient admin=administrator();jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_MFA_RECOVERY')",user);
+        UUID target=target();byte[] previous=seedFactor(target);HttpClient oldBrowser=browser();login(oldBrowser,"E002");stepUp(oldBrowser,previous,Instant.now());var old=tokens(oldBrowser,"web");
+        String path="/api/admin/mfa/users/"+target+"/recovery",key=UUID.randomUUID().toString();var body=Map.of("reason","Verified employee through independent helpdesk procedure","evidence_ref","ticket:MFA-100/evidence");
+        var issued=recoveryJson(admin,path,body,key);assertEquals(200,issued.statusCode(),issued.body());var grant=json.readTree(issued.body());String token=grant.get("token").asText();
+        assertTrue(issued.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
+        assertEquals(DigestAuthorizationService.digest(token),jdbc.queryForObject("SELECT token_digest FROM mfa_recovery_grant",String.class));
+        var repeated=recoveryJson(admin,path,body,key);assertEquals(200,repeated.statusCode());assertTrue(json.readTree(repeated.body()).get("token").isNull());
+        assertEquals(409,recoveryJson(admin,path,Map.of("reason","Different decision","evidence_ref","ticket:MFA-100/evidence"),key).statusCode());
+        assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,target));
+        assertEquals(401,get(oldBrowser,"/api/session/me").statusCode());assertEquals(401,api(old.get("access_token").asText()).statusCode());assertEquals(400,refresh("web",old.get("refresh_token").asText()).statusCode());
+        HttpClient owner=browser(),stranger=browser();login(owner,"E002");login(stranger,"E002");
+        assertEquals(403,postJson(owner,"/api/mfa/enrollment",Map.of()).statusCode());assertEquals(401,get(owner,authorize("web","v".repeat(64))).statusCode());
+        assertTrue(json.readTree(get(owner,"/api/mfa").body()).get("recovery_required").asBoolean());
+        assertEquals(400,postJson(admin,"/api/mfa/recovery",Map.of("recovery_token",token)).statusCode());
+        var started=postJson(owner,"/api/mfa/recovery",Map.of("recovery_token",token));assertEquals(200,started.statusCode(),started.body());var replacement=json.readTree(started.body());
+        assertEquals(400,postJson(stranger,"/api/mfa/recovery",Map.of("recovery_token",token)).statusCode());
+        String confirm="/api/mfa/changes/"+replacement.get("id").asText()+"/confirm";byte[] secret=new org.apache.commons.codec.binary.Base32().decode(replacement.get("secret").asText());
+        assertEquals(400,postJson(stranger,confirm,Map.of("code",otp(secret,Instant.now()))).statusCode());
+        assertEquals(401,get(owner,authorize("web","v".repeat(64))).statusCode());assertEquals(200,postJson(owner,confirm,Map.of("code",otp(secret,Instant.now()))).statusCode());
+        assertFalse(mfa.recoveryRequired(target));assertEquals(2L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,target));
+        HttpClient fresh=browser();login(fresh,"E002");stepUp(fresh,secret,Instant.now().plusSeconds(30));assertEquals(200,api(tokens(fresh,"web").get("access_token").asText()).statusCode());
+    }
+    @Test void recoveryAuthorizationChecksLiveRoleSelfSeparationCsrfAndTargetPasswordGate() throws Exception {
+        HttpClient admin=administrator();UUID target=target();seedFactor(target);String key=UUID.randomUUID().toString();
+        var body=Map.of("reason","Verified helpdesk case","evidence_ref","ticket:MFA-200/evidence","actor_id",user.toString(),"roles",List.of("ROLE_ADMIN_MFA_RECOVERY"));String path="/api/admin/mfa/users/"+target+"/recovery";
+        assertEquals(403,recoveryJson(admin,path,body,key).statusCode());jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_MFA_RECOVERY')",user);
+        assertEquals(403,recoveryJson(admin,"/api/admin/mfa/users/"+user+"/recovery",body,key).statusCode());
+        assertEquals(403,admin.send(HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header("Idempotency-Key",key).POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        HttpClient weak=browser();login(weak);assertEquals(403,recoveryJson(weak,path,body,key).statusCode());
+        var stale=new IdentityPrincipal(user,0,Instant.now().minusSeconds(600),List.of("ROLE_ADMIN_MFA_RECOVERY"),Instant.now());
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.authorizeRecovery(stale,target,key,"Verified case","ticket:MFA-200/evidence"));
+        jdbc.update("UPDATE iam_user SET password_gate='BLOCKED' WHERE id=?",target);assertEquals(409,recoveryJson(admin,path,body,key).statusCode());
+        jdbc.update("UPDATE iam_user SET password_gate='OPEN' WHERE id=?",target);jdbc.update("DELETE FROM iam_user_role WHERE user_id=? AND role='ROLE_ADMIN_MFA_RECOVERY'",user);
+        assertEquals(403,recoveryJson(admin,path,body,key).statusCode());assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM mfa_recovery_grant",Integer.class));
+    }
+    @Test void recoveryGrantAndPendingConfirmationRejectExpiredRevokedOrStaleIssuers() throws Exception {
+        var admin=recoveryOperator();UUID target=target();seedFactor(target);
+        var expired=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Verified case","ticket:MFA-300/evidence");
+        jdbc.update("UPDATE mfa_recovery_grant SET expires_at=now()-interval '1 second' WHERE id=?",expired.id());
+        var targetPrincipal=new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER"));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(targetPrincipal,"owner",expired.token()));
+        var fresh=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Reverified case","ticket:MFA-301/evidence");var current=new IdentityPrincipal(target,2,Instant.now(),List.of("ROLE_USER"));
+        jdbc.update("DELETE FROM iam_user_role WHERE user_id=? AND role='ROLE_ADMIN_MFA_RECOVERY'",user);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(current,"owner",fresh.token()));
+        jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_MFA_RECOVERY')",user);var pending=factors.recover(current,"owner",fresh.token());
+        jdbc.update("DELETE FROM iam_user_role WHERE user_id=? AND role='ROLE_ADMIN_MFA_RECOVERY'",user);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.confirm(current,"owner",pending.id(),otp(new org.apache.commons.codec.binary.Base32().decode(pending.secret()),Instant.now())));
+        jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_MFA_RECOVERY')",user);
+        jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",user);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.confirm(current,"owner",pending.id(),otp(new org.apache.commons.codec.binary.Base32().decode(pending.secret()),Instant.now())));
+        assertTrue(mfa.recoveryRequired(target));assertFalse(mfa.enrolled(target));
+    }
+    @Test void concurrentRecoveryRedemptionConsumesOneCapabilityAndExpiryNeverEnablesPasswordOnlyAccess() throws Exception {
+        var admin=recoveryOperator();UUID target=target();seedFactor(target);var grant=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Verified case","ticket:MFA-400/evidence");
+        var actor=new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER"));ExecutorService pool=Executors.newFixedThreadPool(2);
+        Callable<Boolean> redeem=()->{try{factors.recover(actor,UUID.randomUUID().toString(),grant.token());return true;}catch(org.springframework.web.server.ResponseStatusException e){return false;}};
+        try{var first=pool.submit(redeem);var second=pool.submit(redeem);assertNotEquals(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS));}finally{pool.shutdownNow();}
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM mfa_factor_change WHERE state='PENDING'",Integer.class));
+        jdbc.execute("UPDATE mfa_factor_change SET expires_at=now()-interval '1 second'");assertEquals(1,factors.expire());
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.enroll(actor));assertTrue(mfa.recoveryRequired(target));assertTrue(mfa.required(actor));
+    }
+    @Test void recoveryCancellationAndTargetEpochChangesNeverRemoveTheEnrollmentBarrier() {
+        var admin=recoveryOperator();UUID target=target();seedFactor(target);
+        var grant=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Verified case","ticket:MFA-500/evidence");
+        var actor=new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER"));
+        var stale=new IdentityPrincipal(target,1,Instant.now().minusSeconds(600),List.of("ROLE_USER"));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(stale,"owner",grant.token()));
+        var pending=factors.recover(actor,"owner",grant.token());factors.cancel(actor,"owner",pending.id());
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(actor,"owner",grant.token()));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.enroll(actor));
+        assertTrue(mfa.recoveryRequired(target));assertFalse(mfa.enrolled(target));
+        var fresh=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Reverified case","ticket:MFA-501/evidence");
+        jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",target);
+        var changed=new IdentityPrincipal(target,3,Instant.now(),List.of("ROLE_USER"));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(changed,"owner",fresh.token()));
+        assertTrue(mfa.recoveryRequired(target));assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM mfa_factor_change WHERE secret_cipher IS NOT NULL",Integer.class));
+    }
+    @Test void factorConfirmationCommitFailureRestoresOriginalFactorAndCanBeSafelyRetried() throws Exception {
+        seedFactor();var actor=strongPrincipal();byte[] original=jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user);var pending=factors.rotate(actor,"owner");byte[] secret=new org.apache.commons.codec.binary.Base32().decode(pending.secret());
+        jdbc.execute("CREATE FUNCTION fail_mfa_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test factor commit failure'; END $$");
+        jdbc.execute("CREATE CONSTRAINT TRIGGER fail_mfa_commit AFTER UPDATE ON iam_user DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_mfa_commit()");
+        try{
+            assertThrows(RuntimeException.class,()->factors.confirm(actor,"owner",pending.id(),otp(secret,Instant.now())));
+            assertArrayEquals(original,jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user));assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+            assertEquals("PENDING",jdbc.queryForObject("SELECT state FROM mfa_factor_change WHERE id=?",String.class,pending.id()));
+        }finally{jdbc.execute("DROP TRIGGER fail_mfa_commit ON iam_user");jdbc.execute("DROP FUNCTION fail_mfa_commit()");}
+        factors.confirm(actor,"owner",pending.id(),otp(secret,Instant.now()));assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+    }
     @Test void totpEnrollmentFencesOldTokensAndAuthorizationRequiresBoundMfaChallenge() throws Exception {
         HttpClient browser=browser();var previous=tokens(browser,"web");
         assertEquals(403,browser.send(HttpRequest.newBuilder(uri("/api/mfa/enrollment")).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString("{}")).build(),HttpResponse.BodyHandlers.ofString()).statusCode());

@@ -19,7 +19,7 @@ $env:UNIPASS_MFA_KEY = [Convert]::ToBase64String($mfaKeyBytes)
 
 真实部署必须将生成结果安全保存到企业 secret 管理，不要每次进程启动重新生成。数据库仅保存带随机 nonce 的 AES-256-GCM envelope；AAD 绑定用户不可变 UUID，密文被篡改或挪给其他用户会拒绝解密。响应与 DTO 的字符串表示脱敏，OTP/密钥不进入审计。
 
-当前 envelope 为 v1、单外置 key，尚未实现多 key 在线重加密与轮换工具。丢失 key 会导致原因素不可用；密钥备份恢复、硬件认证器、恢复码以及受控因素撤销仍是后续交付，不能靠删除因素记录代替安全恢复。
+当前 envelope 为 v1、单外置 key，尚未实现多 key 在线重加密与轮换工具。丢失 key 会导致原因素不可用；密钥备份恢复、硬件认证器和恢复码仍是后续交付。因素轮换与受控退役/恢复已新增 V7，见 [因素生命周期](18-MFA因素轮换与受控恢复.md)；不能靠手工删除因素记录代替该流程。
 
 ## 授权与挑战
 
@@ -37,7 +37,7 @@ $env:UNIPASS_MFA_KEY = [Convert]::ToBase64String($mfaKeyBytes)
 
 | 方法与路径 | 请求 / 返回 |
 |---|---|
-| `GET /api/mfa` | 返回 enrolled、required、recent；不返回因素密钥 |
+| `GET /api/mfa` | 返回 enrolled、required、recent、recovery_required；不返回因素密钥 |
 | `POST /api/mfa/enrollment` | 空 JSON；返回 secret、otpauthUri、expiresAt，只有本次响应可读 |
 | `POST /api/mfa/enrollment/confirm` | `{ "code": "六位数字" }`；成功返回 reauthentication_required=true |
 | `POST /api/mfa/context` | 空 JSON；为独立 step-up 创建服务器 context |
@@ -48,6 +48,6 @@ $env:UNIPASS_MFA_KEY = [Convert]::ToBase64String($mfaKeyBytes)
 
 ## 迁移与验证
 
-服务 Flyway 升级到 V4。因素与挑战均外键关联身份，事务锁顺序与 token/password 保持身份在前；移除 V4 表会丢失因素和消费证据，不是可接受的回退操作。旧版本不理解 MFA，启用 MFA 后不得直接回退并继续签发无 MFA 令牌。首次切换还需清理旧版本序列化会话并要求重新登录；新 principal 固定 serialVersionUID，跨版本兼容仍须执行回归。
+初始 MFA 使用 V4，当前服务已增加 V7 因素生命周期。因素与挑战均外键关联身份，事务锁顺序与 token/password 保持身份在前；移除表会丢失因素和消费证据，不是可接受的回退操作。旧版本不理解 MFA 或恢复标志，启用后不得直接回退并继续签发无 MFA 令牌。首次切换还需清理旧版本序列化会话并要求重新登录；principal 固定 serialVersionUID，跨版本兼容仍须执行回归。
 
 自动测试使用真实 PG/Redis，覆盖注册后 epoch 失效、HTTP CSRF、授权挑战、错误 context、跨会话、过期、时间步重放、跨挑战失败锁定、并发恰一次消费、amr 与 refresh 持久化，以及 envelope 篡改和用户归属。测试 OTP 由标准库生成；真实认证器扫码、时钟偏差运维、多实例切换和生产 secret 恢复尚未验收。
