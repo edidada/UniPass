@@ -36,8 +36,9 @@ public final class MfaService {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM mfa_totp WHERE user_id=? AND enabled)",Boolean.class,user));
     }
     public boolean required(IdentityPrincipal principal) {
-        return enrolled(principal.getUserId()) || principal.getRoles().stream().anyMatch(role->role.startsWith("ROLE_ADMIN"));
+        return recoveryRequired(principal.getUserId()) || enrolled(principal.getUserId()) || principal.getRoles().stream().anyMatch(role->role.startsWith("ROLE_ADMIN"));
     }
+    public boolean recoveryRequired(UUID user){return Boolean.TRUE.equals(jdbc.queryForObject("SELECT mfa_recovery_required FROM iam_user WHERE id=?",Boolean.class,user));}
     public boolean recent(IdentityPrincipal principal) {
         return principal.getMfaAt()!=null && !principal.getMfaAt().isAfter(clock.instant()) && principal.getMfaAt().plusSeconds(300).isAfter(clock.instant());
     }
@@ -48,15 +49,15 @@ public final class MfaService {
         if(!principal.getAuthenticatedAt().plusSeconds(300).isAfter(clock.instant()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Recent authentication required");
         return tx.execute(status->{
             accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            if(recoveryRequired(principal.getUserId()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Controlled factor recovery required");
             if(enrolled(principal.getUserId()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Factor already enrolled");
             byte[] secret=new byte[20];new SecureRandom().nextBytes(secret);
             try {
-                String encoded=new Base32().encodeAsString(secret).replace("=","");Instant expires=clock.instant().plusSeconds(300);
+                Instant expires=clock.instant().plusSeconds(300);
                 jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,pending_expires_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET secret_cipher=excluded.secret_cipher,pending_expires_at=excluded.pending_expires_at,last_used_step=-1",
                         principal.getUserId(),cipher.encrypt(principal.getUserId(),secret),Timestamp.from(expires));
                 accounts.audit(principal.getUserId(),"MFA_ENROLL_STARTED");
-                String label=URLEncoder.encode("UniPass:"+principal.getUserId(),StandardCharsets.UTF_8);
-                return new Enrollment(encoded,"otpauth://totp/"+label+"?secret="+encoded+"&issuer=UniPass&algorithm=SHA1&digits=6&period=30",expires);
+                return enrollment(principal.getUserId(),secret,expires);
             } finally {Arrays.fill(secret,(byte)0);}
         });
     }
@@ -64,7 +65,7 @@ public final class MfaService {
         boolean valid=Boolean.TRUE.equals(tx.execute(status->{
             accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
             var factor=factor(principal.getUserId());Instant now=clock.instant();
-            if(factor==null || factor.enabled || factor.pendingExpires==null || !factor.pendingExpires.isAfter(now)
+            if(recoveryRequired(principal.getUserId()) || factor==null || factor.enabled || factor.pendingExpires==null || !factor.pendingExpires.isAfter(now)
                     || !principal.getAuthenticatedAt().plusSeconds(300).isAfter(now))return false;
             long step=verify(principal.getUserId(),factor,code);
             if(step<0)return false;
@@ -110,20 +111,30 @@ public final class MfaService {
     }
     private long verify(UUID user,Factor factor,String code) {
         Instant now=clock.instant();if(factor.lockedUntil!=null && factor.lockedUntil.isAfter(now))return -1;
-        byte[] raw=cipher.decrypt(user,factor.encrypted);long matched=-1;
-        try {
-            if(code!=null && code.matches("[0-9]{6}")){
-                long current=now.getEpochSecond()/30;
-                for(long step=current-1;step<=current+1;step++)
-                    if(totp.validateOneTimePassword(new SecretKeySpec(raw,totp.getAlgorithm()),Instant.ofEpochSecond(step*30),code) && step>factor.lastStep)matched=step;
-            }
-        }catch(java.security.InvalidKeyException e){throw new IllegalStateException("Factor key unavailable");}
-        finally {Arrays.fill(raw,(byte)0);}
+        long matched=matchingStep(user,factor.encrypted,factor.lastStep,code);
         if(matched<0){
             int failures=factor.lockedUntil!=null && !factor.lockedUntil.isAfter(now)?1:factor.failures+1;
             jdbc.update("UPDATE mfa_totp SET failed_attempts=?,locked_until=? WHERE user_id=?",failures,failures>=5?Timestamp.from(now.plusSeconds(1800)):null,user);
             accounts.audit(user,"MFA_FAILED");
         }
+        return matched;
+    }
+    byte[] encrypt(UUID user,byte[] secret){return cipher.encrypt(user,secret);}
+    Enrollment enrollment(UUID user,byte[] secret,Instant expires){
+        String encoded=new Base32().encodeAsString(secret).replace("=","");
+        String label=URLEncoder.encode("UniPass:"+user,StandardCharsets.UTF_8);
+        return new Enrollment(encoded,"otpauth://totp/"+label+"?secret="+encoded+"&issuer=UniPass&algorithm=SHA1&digits=6&period=30",expires);
+    }
+    long matchingStep(UUID user,byte[] encrypted,long lastStep,String code){
+        Instant now=clock.instant();byte[] raw=cipher.decrypt(user,encrypted);long matched=-1;
+        try {
+            if(code!=null && code.matches("[0-9]{6}")){
+                long current=now.getEpochSecond()/30;
+                for(long step=current-1;step<=current+1;step++)
+                    if(totp.validateOneTimePassword(new SecretKeySpec(raw,totp.getAlgorithm()),Instant.ofEpochSecond(step*30),code) && step>lastStep)matched=step;
+            }
+        }catch(java.security.InvalidKeyException e){throw new IllegalStateException("Factor key unavailable");}
+        finally {Arrays.fill(raw,(byte)0);}
         return matched;
     }
 }

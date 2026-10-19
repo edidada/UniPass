@@ -57,7 +57,7 @@ public class SecurityConfiguration {
         return context -> {
             if (!(context.getPrincipal().getPrincipal() instanceof IdentityPrincipal principal)) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             if (!accounts.allowed(principal.getUserId(), principal.getEpoch()) || accounts.mustChange(principal.getUserId())) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
-            if (mfa.required(principal) && principal.getMfaAt()==null) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
+            if (mfa.recoveryRequired(principal.getUserId()) || mfa.required(principal) && principal.getMfaAt()==null) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             context.getJwsHeader().keyId(env.getRequiredProperty("unipass.signing.alias"));
             context.getClaims().subject(principal.getUserId().toString()).claim("auth_epoch", principal.getEpoch())
                     .claim("unipass_family", context.getAuthorization().getId()).claim("amr", new ArrayList<>(principal.getMfaAt()==null?List.of("pwd"):List.of("pwd","otp")));

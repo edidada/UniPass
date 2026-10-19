@@ -11,8 +11,9 @@ import org.springframework.scheduling.annotation.*;
 public class RecoveryJobs {
     private final RecoveryMailWorker mail;private final PasswordChangeService passwords;
     private final RedisSecurityState security;
+    private final MfaLifecycleService factors;
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(RecoveryJobs.class);
-    public RecoveryJobs(RecoveryMailWorker mail,PasswordChangeService passwords,RedisSecurityState security){this.mail=mail;this.passwords=passwords;this.security=security;}
+    public RecoveryJobs(RecoveryMailWorker mail,PasswordChangeService passwords,RedisSecurityState security,MfaLifecycleService factors){this.mail=mail;this.passwords=passwords;this.security=security;this.factors=factors;}
     @Scheduled(fixedDelayString="${unipass.jobs.security-delay-ms:1000}") void security(){
         try{security.recoverIfNeeded();}catch(RuntimeException e){LOG.warn("Redis authentication recovery unavailable");}
     }
@@ -21,5 +22,6 @@ public class RecoveryJobs {
     }
     @Scheduled(fixedDelayString="${unipass.jobs.recovery-delay-ms:5000}") void abandoned(){
         try{passwords.markAbandonedUnknown();}catch(RuntimeException e){LOG.warn("Password recovery scan unavailable");}
+        try{factors.expire();}catch(RuntimeException e){LOG.warn("Factor expiration scan unavailable");}
     }
 }
