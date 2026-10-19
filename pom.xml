@@ -12,6 +12,7 @@
     <module>iam-server</module>
   </modules>
   <properties>
+    <java.version>17</java.version>
     <maven.compiler.release>17</maven.compiler.release>
     <maven.compiler.parameters>true</maven.compiler.parameters>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

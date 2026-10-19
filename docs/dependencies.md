@@ -4,7 +4,7 @@
 
 | 依赖 | 版本 | 用途 | 许可证 |
 |---|---|---|---|
-| Java | 编译 release 17，本机 Oracle JDK 17.0.12 | 当前本地构建；生产建议 JDK 21，尚未验证 | 按选用 JDK 发行版确认 |
+| Java | 编译 release 17，本机 Oracle JDK 17.0.12 | 构建、CI 与运行基线 JDK 17 | 按选用 JDK 发行版确认 |
 | Maven | 本机 3.9.11 | 多模块构建 | Apache-2.0 |
 | UnboundID LDAP SDK | 7.0.3 | LDAPS、AD/OpenLDAP 适配与测试服务器 | POM 包含 Apache-2.0 可选许可 |
 | PostgreSQL JDBC | 42.7.8 | 业务数据库访问 | BSD-2-Clause |
@@ -15,7 +15,7 @@
 | Embedded PG binaries BOM | 17.6.0 | 测试数据库 PostgreSQL 17.6 | PostgreSQL 及分发组件许可证 |
 | compiler / surefire / failsafe / shade 插件 | 3.14.1 / 3.5.4 / 3.5.4 / 3.6.1 | 编译、测试、打包 | Apache-2.0 |
 
-上述为 P1/P2 领域库的显式基线。JDK 17 是兼容构建下限，未修改生产 JDK 21 建议。
+上述为 P1/P2 领域库的显式基线。按仓库构建约定统一 JDK 17；旧设计中的 JDK 21 建议已由此基线替代。
 
 ## P2 服务运行时
 

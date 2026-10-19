@@ -10,6 +10,6 @@ pwsh -NoProfile -File scripts/verify-stage1.ps1
 
 需要 JDK 17+、Maven 3.9+。该命令运行 LDAPS 与真实 PostgreSQL 17.6 测试并打包，不依赖 Docker。
 
-OIDC 全量回归另需本机 Redis：`pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable 'redis-server 完整路径'`。
+OIDC 全量回归另需本机 Redis：`pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable 'redis-server 完整路径'`。构建与运行基线为 JDK 17；Maven 为主，Gradle 方案在 `build/gradle-jdk17` 分支，见 [构建与 CI](docs/17-构建与持续集成.md)。
 
 [运行说明](docs/11-第一阶段运行与验证.md) · [改密核心](docs/12-第二阶段密码核心与恢复.md) · [OIDC 服务](docs/13-第二阶段OIDC运行与验证.md) · [阶段进度](docs/10-阶段实施进度.md) · [文档索引](docs/README.md)

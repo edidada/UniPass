@@ -215,7 +215,7 @@ class OidcFlowIT {
         Path input=Path.of("target","protocol-test","recovery-contact.json"),log=Path.of("target","protocol-test","recovery-cli.log");
         Files.writeString(input,json.writeValueAsString(Map.of("userId",user.toString(),"email","cli-verified@example.test","evidenceRef","ticket:roster-verification")));
         var command=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin",windows()?"java.exe":"java").toString(),
-                "-Dloader.main=com.unipass.server.RecoveryAdminCli","-cp",Path.of("target","iam-server-0.1.0-SNAPSHOT-exec.jar").toAbsolutePath().toString(),
+                "-Dloader.main=com.unipass.server.RecoveryAdminCli","-cp",Path.of(System.getProperty("test.server.exec.jar","target/iam-server-0.1.0-SNAPSHOT-exec.jar")).toAbsolutePath().toString(),
                 "org.springframework.boot.loader.launch.PropertiesLauncher","provision-contact",input.toAbsolutePath().toString());
         command.environment().put("UNIPASS_DB_URL",postgres.getJdbcUrl("postgres","postgres"));command.environment().put("UNIPASS_DB_USER","postgres");command.environment().put("UNIPASS_DB_PASSWORD","test");
         Process process=command.redirectErrorStream(true).redirectOutput(log.toFile()).start();
@@ -499,7 +499,7 @@ class OidcFlowIT {
         Files.writeString(input,"{\"client_id\":\"cli-client\",\"name\":\"CLI test\",\"kind\":\"CONFIDENTIAL\",\"redirect_uris\":[\"https://cli.example/cb\"],\"post_logout_redirect_uris\":[],\"scopes\":[\"openid\"]}");
         Path log=Path.of("target","protocol-test","client-cli.log");
         var command=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin",windows()?"java.exe":"java").toString(),
-                "-Dloader.main=com.unipass.server.ClientAdminCli","-cp",Path.of("target","iam-server-0.1.0-SNAPSHOT-exec.jar").toAbsolutePath().toString(),
+                "-Dloader.main=com.unipass.server.ClientAdminCli","-cp",Path.of(System.getProperty("test.server.exec.jar","target/iam-server-0.1.0-SNAPSHOT-exec.jar")).toAbsolutePath().toString(),
                 "org.springframework.boot.loader.launch.PropertiesLauncher","register",input.toAbsolutePath().toString());
         command.environment().put("UNIPASS_DB_URL",postgres.getJdbcUrl("postgres","postgres"));
         command.environment().put("UNIPASS_DB_USER","postgres");command.environment().put("UNIPASS_DB_PASSWORD","test");
