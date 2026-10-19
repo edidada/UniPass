@@ -61,3 +61,5 @@ V7 新增 `mfa_recovery_grant`、`mfa_factor_change`、`mfa_lifecycle_guard` 与
 真实 helpdesk 核验、可信交付渠道、认证器扫码、多节点切换、主 key 备份与轮换、独立 RP/SDK 和五秒吊销证据仍未验收。P2 不因本增量整体完成。
 
 本地 Maven 证据：2026-10-20 07:46:28（Asia/Shanghai），`scripts/verify-all.ps1 -RedisExecutable <Redis 8.4.2>` 成功，约 94 秒，**92 项**测试全部通过，失败/错误/跳过均为 0。环境为 JDK 17.0.12、Maven 3.9.11、真实 PostgreSQL 17.6 与随机端口 Redis 8.4.2；HTTP 用例仍使用测试目录与邮件适配器。
+
+Gradle 证据：2026-10-20 07:48:47（Asia/Shanghai），`build/gradle-jdk17` 同步功能提交 `1277d87` 后，Wrapper 8.14.3 / JDK 17 的 `clean build` 成功，约 103 秒，**92 项**全部通过，失败/错误/跳过均为 0；复用本机依赖缓存。两种打包服务的 80 个运行库条目名称/版本一致。源码一致性、文档链接与 OpenAPI 引用已核对；无 remote，远程 Actions 仍未验证。
