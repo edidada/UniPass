@@ -1,0 +1,25 @@
+import org.springframework.boot.gradle.tasks.bundling.BootJar
+
+dependencies {
+    api project(':iam-directory')
+    api 'org.postgresql:postgresql:42.7.8'
+    api 'org.flywaydb:flyway-core:11.13.2'
+    api 'org.flywaydb:flyway-database-postgresql:11.13.2'
+    api 'org.apache.commons:commons-csv:1.14.1'
+    testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
+}
+
+tasks.named('jar') { archiveClassifier = '' }
+// Use the loader without importing the server's Boot dependency BOM into the domain CLI.
+tasks.register('bootJar', BootJar) {
+    archiveClassifier = 'cli'
+    mainClass = 'com.unipass.identity.IdentityCli'
+    targetJavaVersion = JavaVersion.VERSION_17
+    includeTools = false
+    classpath = sourceSets.main.runtimeClasspath
+}
+tasks.named('assemble') { dependsOn tasks.named('bootJar') }
+tasks.named('integrationTest', Test) {
+    dependsOn tasks.named('bootJar')
+    systemProperty 'test.identity.cli.jar', tasks.named('bootJar').get().archiveFile.get().asFile.absolutePath
+}

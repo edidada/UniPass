@@ -1,0 +1,9 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'unipass'
+include 'iam-directory', 'iam-identity', 'iam-password', 'iam-server'

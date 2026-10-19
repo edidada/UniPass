@@ -1,0 +1,35 @@
+apply plugin: 'org.springframework.boot'
+
+// Boot auto-imports its BOM when the dependency-management plugin is present.
+// Match the Maven parent's explicit JUnit baseline after that auto-import.
+dependencyManagement {
+    imports { mavenBom 'org.junit:junit-bom:5.13.4' }
+    // Match the Maven executable's resolved Commons IO rather than a transitive older choice.
+    dependencies { dependency 'commons-io:commons-io:2.21.0' }
+}
+
+dependencies {
+    implementation project(':iam-password')
+    implementation 'com.eatthepath:java-otp:1.0.0'
+    implementation 'commons-codec:commons-codec'
+    implementation 'org.springframework.boot:spring-boot-starter-mail'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.springframework.boot:spring-boot-starter-oauth2-authorization-server'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.session:spring-session-data-redis'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
+}
+
+tasks.named('jar') { archiveClassifier = '' }
+tasks.named('bootJar') {
+    archiveClassifier = 'exec'
+    mainClass = 'com.unipass.server.UniPassApplication'
+}
+tasks.named('integrationTest', Test) {
+    dependsOn tasks.named('bootJar')
+    systemProperty 'test.server.exec.jar', tasks.named('bootJar').get().archiveFile.get().asFile.absolutePath
+}

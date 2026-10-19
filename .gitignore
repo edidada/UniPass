@@ -52,3 +52,6 @@ build
 ._*
 .Spotlight-V100/
 .Trashes/
+
+# Gradle bootstrap binary is part of the reproducible build.
+!gradle/wrapper/gradle-wrapper.jar

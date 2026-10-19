@@ -1,0 +1,4 @@
+dependencies {
+    api project(':iam-identity')
+    testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
+}
