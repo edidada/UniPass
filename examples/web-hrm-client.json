@@ -1,0 +1,8 @@
+{
+  "client_id": "hrm",
+  "name": "HR BFF",
+  "kind": "CONFIDENTIAL",
+  "redirect_uris": ["https://hrm.example.test/login/oauth2/code/unipass"],
+  "post_logout_redirect_uris": ["https://hrm.example.test/"],
+  "scopes": ["openid", "profile", "api.read"]
+}

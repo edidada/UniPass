@@ -39,6 +39,8 @@ access token 临近到期三十秒时由框架刷新；返回 ID token 重新验
 
 先通过 IAM 的 ClientAdminCli 注册 CONFIDENTIAL 客户端，scope 为 `openid, profile, api.read`，精确注册回调与退出地址。client_id 使用 3–60 位字母、数字、下划线或连字符；客户端 secret 随机 32–64 个可打印 ASCII 字符。每个实例提供下列受保护配置：
 
+配置模板：[CRM](../examples/web-crm-client.json)、[HR](../examples/web-hrm-client.json)。替换为真实 HTTPS origin 后，通过 [客户端注册命令](13-第二阶段OIDC运行与验证.md) 逐个注册；`UNIPASS_CLIENT_SECRET` 与对应 RP 的 `UNIPASS_RP_CLIENT_SECRET` 必须一致，不能把生产 secret 加进 JSON。Introspection 的 Basic 客户端凭证按 [RFC 6749 §2.3.1](https://www.rfc-editor.org/rfc/rfc6749#section-2.3.1) 做 form 编码，回归使用含 `+%:` 的随机 secret 检验互通。
+
 | 环境变量 | 含义 |
 |---|---|
 | `UNIPASS_RP_ID` | 如 crm 或 hrm；同时派生 cookie 与 Redis namespace |
@@ -65,3 +67,5 @@ access token 临近到期三十秒时由框架刷新；返回 ID token 重新验
 测试使用 Java HTTP cookie jar，各应用在 localhost 不同端口，没有模拟真实站点的浏览器 SameSite 行为。真实 HTTPS 跨主机浏览器、MFA 接入页、OIDC back-channel logout、多实例、故障切换与生产目录仍待验收。改密到两个 RP/API 拒绝的本地观察保存在 `iam-web/target/independent-rp/revocation-observations.md`；少量串行样本不是 P99、峰值或五秒 SLA 报告。
 
 参考：[Spring OAuth2 Client](https://docs.spring.io/spring-security/reference/6.5/servlet/oauth2/client/core.html)、[JWT 配合 introspection](https://docs.spring.io/spring-security/reference/6.5/servlet/oauth2/resource-server/opaque-token.html)。
+
+2026-10-20 22:05:56（Asia/Shanghai），JDK 17.0.12 / Maven 3.9.11 的全工程验证成功，约 145 秒，五个模块共 **102 项**，失败/错误/跳过均为 0。其中新模块 2 项单测、8 项独立进程集成测试；本次使用含 `+%:` 的客户端 secret。证据来自各模块 target 报告和实际可执行包，未以此声明真实浏览器或生产 SLA 通过。

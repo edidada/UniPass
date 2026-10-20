@@ -39,3 +39,7 @@ Spring 组件、Flyway、Jackson、Tomcat 为 Apache-2.0；JDBC 与 LDAP 许可�
 运行库采用 POM 显式版本，测试库不进入可执行 JAR。传递依赖以 Maven 解析为准；实施升级时执行 `mvn dependency:tree` 并归档扫描结果。当前尚未执行漏洞扫描、生产镜像构建或支持周期审核，没有生产镜像摘要。
 
 官方资料：[LDAP SDK 连接与 TLS](https://docs.ldap.com/ldap-sdk/docs/getting-started/connections.html)、[Zonky PostgreSQL 测试库](https://github.com/zonkyio/embedded-postgres)、[Maven Surefire](https://maven.apache.org/components/surefire-archives/surefire-3.5.4/maven-surefire-plugin/usage.html)。
+
+## 独立 RP/BFF
+
+`iam-web` 同样使用 Boot 3.5.16 BOM 与 JDK 17，OAuth2 client/resource server 及 Security 为 6.5.11，Spring Session 为 3.5.7。生产包不含 IAM 领域库、PG/Flyway、LDAP SDK 或测试库；IAM 服务依赖仅用于打包进程的接入测试。Redis 会话使用 JDK AES/GCM 加密，不引入自制 OAuth/JWT 解析器。网络和回退边界见 [接入记录](19-独立Web应用与BFF接入.md)。

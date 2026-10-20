@@ -94,7 +94,7 @@ class IndependentRpIT {
         var registrar=new ClientRegistrationService(new JdbcRegisteredClientRepository(jdbc),true);
         Path web=Path.of(System.getProperty("test.web.exec.jar","target/iam-web-0.1.0-SNAPSHOT-exec.jar")).toAbsolutePath();
         for(var app:rpPorts.entrySet()){
-            String name=app.getKey(),secret=UUID.randomUUID().toString(),sessionKey=Base64.getEncoder().encodeToString(UUID.randomUUID().toString().substring(0,32).getBytes(StandardCharsets.UTF_8));sessionKeys.put(name,sessionKey);
+            String name=app.getKey(),secret=UUID.randomUUID()+"+%:",sessionKey=Base64.getEncoder().encodeToString(UUID.randomUUID().toString().substring(0,32).getBytes(StandardCharsets.UTF_8));sessionKeys.put(name,sessionKey);
             registrar.register(new ClientRegistrationService.Spec(name,"Independent "+name,ClientRegistrationService.Kind.CONFIDENTIAL,List.of(rp(name)+"/login/oauth2/code/unipass"),List.of(rp(name)+"/"),Set.of("openid","profile","api.read")),secret);
             Process process=launch(name,List.of("-jar",web.toString(),"--server.address=127.0.0.1","--unipass.rp.local-http=true"),Map.of("UNIPASS_RP_PORT",Integer.toString(app.getValue()),"UNIPASS_RP_ID",name,"UNIPASS_RP_ISSUER",issuer(),"UNIPASS_RP_ORIGIN",rp(name),"UNIPASS_RP_CLIENT_SECRET",secret,"UNIPASS_RP_SESSION_KEY",sessionKey,"UNIPASS_RP_REDIS_PORT",Integer.toString(redisPort),"UNIPASS_RP_REDIS_PASSWORD",redisPassword));
             ready(process,rp(name)+"/health",name);
