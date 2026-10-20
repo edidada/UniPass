@@ -10,6 +10,7 @@ dependencies {
     testImplementation project(':iam-server')
     testImplementation project(':iam-identity')
     testImplementation 'org.springframework.security:spring-security-oauth2-authorization-server'
+    testImplementation 'org.springframework:spring-jdbc'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
 }
