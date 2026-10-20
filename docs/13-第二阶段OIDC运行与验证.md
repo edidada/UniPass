@@ -70,7 +70,7 @@ CLI 只需要数据库配置，不启动 Web/Redis/目录。生产 callback 必�
 | `GET /api/password/operations/{id}` | 本人操作；保留受限恢复读取能力 |
 | `GET /api/resource/me` | Bearer access JWT、`at+jwt` 类型、`unipass-api` audience、`api.read` scope、PG 状态；ID token 不得用于 API |
 
-独立资源服务必须实现相同的 epoch/gate/族状态检查，不能仅验签并宣称即时吊销。当前示例 API 与 IAM 同进程，独立 RP/BFF 接入和五秒端到端时延报告仍待补。
+独立资源服务必须实现相同的 epoch/gate/族状态检查，不能仅验签并宣称即时吊销。IAM 内部示例 API 保留，另有 [独立 RP/BFF 与资源端](19-独立Web应用与BFF接入.md) 的双应用进程验证。真实跨站浏览器、多实例和五秒端到端时延报告仍待补。
 
 ## 验证入口与未完成事项
 
@@ -80,4 +80,4 @@ pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable '完整路径/redi
 
 需要 JDK 17、Maven 3.9、可执行 Redis；PG 17.6 由测试库启动，Redis 由测试在随机 loopback 端口独立启动、设置随机密码且关闭持久化，退出回收自有进程。LDAP 网关测试使用本地 TLS 服务器；OIDC HTTP 用例中的目录为测试适配器，因此不能作为真实企业目录认证验收。报告保存在各模块 `target/surefire-reports`、`target/failsafe-reports`。
 
-尚需：短信/飞书验证适配、MFA 主 key 重加密/轮换与真实恢复渠道、SAML IdP 能力验证、独立 RP/BFF 和移动端、多实例/RP 缓存签名轮换、Redis 主备恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。
+尚需：短信/飞书验证适配、MFA 主 key 重加密/轮换与真实恢复渠道、SAML IdP 能力验证、跨站浏览器 RP/BFF 验收和移动端、多实例/RP 缓存签名轮换、Redis 主备恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。

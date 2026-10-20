@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: unipass-web
+  data:
+    redis:
+      host: ${UNIPASS_RP_REDIS_HOST:127.0.0.1}
+      port: ${UNIPASS_RP_REDIS_PORT:6379}
+      password: ${UNIPASS_RP_REDIS_PASSWORD}
+      ssl:
+        enabled: ${UNIPASS_RP_REDIS_TLS:false}
+      connect-timeout: 500ms
+      timeout: 500ms
+  session:
+    timeout: 30m
+    redis:
+      namespace: unipass:rp:${UNIPASS_RP_ID}
+      repository-type: default
+      configure-action: none
+server:
+  port: ${UNIPASS_RP_PORT:8081}
+  forward-headers-strategy: none
+  servlet:
+    session:
+      cookie:
+        name: UNIPASS_RP_${UNIPASS_RP_ID}
+        path: /
+        http-only: true
+        secure: true
+        same-site: lax
+unipass:
+  rp:
+    id: ${UNIPASS_RP_ID}
+    issuer: ${UNIPASS_RP_ISSUER}
+    origin: ${UNIPASS_RP_ORIGIN}
+    secret: ${UNIPASS_RP_CLIENT_SECRET}
+    session-key: ${UNIPASS_RP_SESSION_KEY}
