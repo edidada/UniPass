@@ -1,0 +1,25 @@
+apply plugin: 'org.springframework.boot'
+
+dependencyManagement { imports { mavenBom 'org.junit:junit-bom:5.13.4' } }
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'
+    implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.session:spring-session-data-redis'
+    testImplementation project(':iam-server')
+    testImplementation project(':iam-identity')
+    testImplementation 'org.springframework.security:spring-security-oauth2-authorization-server'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
+}
+tasks.named('jar') { archiveClassifier = '' }
+tasks.named('bootJar') {
+    archiveClassifier = 'exec'
+    mainClass = 'com.unipass.web.WebApplication'
+}
+tasks.named('integrationTest', Test) {
+    dependsOn tasks.named('bootJar'), project(':iam-server').tasks.named('bootJar')
+    systemProperty 'test.web.exec.jar', tasks.named('bootJar').get().archiveFile.get().asFile.absolutePath
+    systemProperty 'test.iam.exec.jar', project(':iam-server').tasks.named('bootJar').get().archiveFile.get().asFile.absolutePath
+}

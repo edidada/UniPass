@@ -33,13 +33,13 @@ subprojects {
 
     dependencyManagement {
         imports {
-            if (project.name == 'iam-server') {
+            if (project.name in ['iam-server', 'iam-web']) {
                 mavenBom 'org.springframework.boot:spring-boot-dependencies:3.5.16'
             }
             mavenBom 'io.zonky.test.postgres:embedded-postgres-binaries-bom:17.6.0'
             mavenBom 'org.junit:junit-bom:5.13.4'
         }
-        if (project.name != 'iam-server') {
+        if (!(project.name in ['iam-server', 'iam-web'])) {
             // Maven's nearer domain JDBC dependency wins over the embedded test tool's JDBC.
             dependencies { dependency 'org.postgresql:postgresql:42.7.8' }
         }

@@ -6,4 +6,4 @@ pluginManagement {
 }
 
 rootProject.name = 'unipass'
-include 'iam-directory', 'iam-identity', 'iam-password', 'iam-server'
+include 'iam-directory', 'iam-identity', 'iam-password', 'iam-server', 'iam-web'

@@ -12,7 +12,7 @@ public final class LiveAccessDecoder implements JwtDecoder {
     public LiveAccessDecoder(RpSettings settings){
         this.settings=settings;signature=NimbusJwtDecoder.withJwkSetUri(settings.issuer+"/oauth/jwks").restOperations(RpConfiguration.http()).validateType(false).build();
         signature.setJwtValidator(JwtValidators.createDefaultWithIssuer(settings.issuer));
-        var rest=RpConfiguration.http();rest.getInterceptors().add((request,body,execution)->{request.getHeaders().setBasicAuth(settings.id,settings.secret);return execution.execute(request,body);});
+        var rest=RpConfiguration.http();rest.getInterceptors().add((request,body,execution)->{request.getHeaders().setBasicAuth(java.net.URLEncoder.encode(settings.id,java.nio.charset.StandardCharsets.UTF_8),java.net.URLEncoder.encode(settings.secret,java.nio.charset.StandardCharsets.UTF_8));return execution.execute(request,body);});
         state=new SpringOpaqueTokenIntrospector(settings.issuer+"/oauth/introspect",rest);
     }
     @Override public Jwt decode(String raw){
