@@ -1,0 +1,174 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "UniPass independent RP/BFF sample",
+    "version": "0.1.0",
+    "description": "RP origin endpoints, distinct from the IAM business API. All writes require exact Origin and CSRF. Bearer credentials never appear in BFF responses."
+  },
+  "security": [
+    {
+      "rpSession": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "rpHealth",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Process readiness, not full IAM dependency acceptance"
+          }
+        }
+      }
+    },
+    "/csrf": {
+      "get": {
+        "operationId": "rpCsrf",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Session-bound header_name and token"
+          }
+        }
+      }
+    },
+    "/bff/profile": {
+      "get": {
+        "operationId": "rpProfile",
+        "description": "Revalidates the current access token against IAM; returns sub and application only.",
+        "responses": {
+          "200": {
+            "description": "Non-secret identity or application data"
+          },
+          "401": {
+            "description": "Sign-in required or credential inactive"
+          },
+          "409": {
+            "description": "Concurrent session request; retry after one second"
+          },
+          "503": {
+            "description": "Dependency unavailable; no protected data returned"
+          }
+        }
+      }
+    },
+    "/bff/data": {
+      "get": {
+        "operationId": "rpData",
+        "description": "Calls the RP resource API using a server-held token; browser receives application data only.",
+        "responses": {
+          "200": {
+            "description": "Non-secret identity or application data"
+          },
+          "401": {
+            "description": "Sign-in required or credential inactive"
+          },
+          "409": {
+            "description": "Concurrent session request; retry after one second"
+          },
+          "503": {
+            "description": "Dependency unavailable; no protected data returned"
+          }
+        }
+      }
+    },
+    "/api/resource/data": {
+      "get": {
+        "operationId": "independentResource",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "description": "Requires own client/audience, at+jwt, api.read and current IAM introspection. ID tokens and tokens of another RP are rejected.",
+        "responses": {
+          "200": {
+            "description": "Non-secret identity or application data"
+          },
+          "401": {
+            "description": "Sign-in required or credential inactive"
+          },
+          "409": {
+            "description": "Concurrent session request; retry after one second"
+          },
+          "503": {
+            "description": "Dependency unavailable; no protected data returned"
+          }
+        }
+      }
+    },
+    "/oauth2/authorization/unipass": {
+      "get": {
+        "operationId": "startRpLogin",
+        "security": [],
+        "responses": {
+          "302": {
+            "description": "Redirects to fixed IAM authorization endpoint with state, nonce and S256 PKCE"
+          }
+        }
+      }
+    },
+    "/login/oauth2/code/unipass": {
+      "get": {
+        "operationId": "rpCallback",
+        "security": [],
+        "description": "Framework callback; checks saved single-use state, PKCE, ID token and nonce.",
+        "responses": {
+          "302": {
+            "description": "Authenticated; fixed application homepage"
+          },
+          "401": {
+            "description": "Invalid or replayed callback"
+          }
+        }
+      }
+    },
+    "/logout": {
+      "post": {
+        "operationId": "rpLogout",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-TOKEN",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Clears local session and redirects to registered IAM logout with ID token hint"
+          },
+          "403": {
+            "description": "Origin or CSRF rejected"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "rpSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "UNIPASS_RP_<id>"
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}

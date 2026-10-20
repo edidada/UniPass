@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |---|---|
 | 编号 | UniPass-LLD-T7 |
-| 版本 / 日期 | V1.0 / 2026-10-18 |
-| 状态 | 待评审设计，尚未实现或验收 |
+| 版本 / 日期 | V1.1 / 2026-10-20 |
+| 状态 | 独立 RP/BFF 与资源示例已实现并本地验证；IAM 门户、后端退出通知与浏览器兼容等未完成，尚未整体验收 |
 | 负责人角色 | 前端 / 后端 |
 | 依赖与开工条件 | T2、T3；选择两个独立 RP 验证 SSO。 |
 
@@ -38,3 +38,5 @@ BFF 会话绑定 sid、sub、auth_epoch；回调 state 在服务端一次性消�
 交付物：门户、Web 示例与接入清单、浏览器兼容报告；对应 A1、A5-4、A6。
 
 开发自测、QA 验证和责任人评审分别记录 commit、执行时间、环境与证据位置；未执行填“未执行”，不得预填通过。
+
+实施记录：[独立 Web/BFF 接入](../19-独立Web应用与BFF接入.md)。当前 `iam-web` 可分别作为 CRM/HRM 独立 JVM 运行，使用自己的加密 Redis 会话、S256 PKCE、一次性 state、Origin/CSRF 和 access token live introspection；资源端再次验签/type/audience/scope。刷新在 Session 加载前串行化，并以长期摘要标记阻止旧 refresh 重试；丢响应销毁本地会话。此示例不替代 Vue/TypeScript IAM 门户、MFA/密码页、会话管理与 back-channel logout。
