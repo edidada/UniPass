@@ -109,7 +109,7 @@ public final class MfaLifecycleService {
             }
             unlocked(current.user);long step=mfa.matchingStep(current.user,current.encrypted,-1,code);
             if(step<0){failed(current.user,now);return false;}
-            jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled,last_used_step) VALUES (?,?,true,?) ON CONFLICT(user_id) DO UPDATE SET secret_cipher=excluded.secret_cipher,enabled=true,pending_expires_at=NULL,last_used_step=excluded.last_used_step,failed_attempts=0,locked_until=NULL",current.user,current.encrypted,step);
+            jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled,last_used_step) VALUES (?,?,true,?) ON CONFLICT(user_id) DO UPDATE SET secret_cipher=excluded.secret_cipher,enabled=true,pending_expires_at=NULL,last_used_step=excluded.last_used_step,failed_attempts=0,locked_until=NULL",current.user,mfa.reencrypt(current.user,current.encrypted),step);
             jdbc.update("UPDATE mfa_factor_change SET state='COMMITTED',secret_cipher=NULL,finished_at=? WHERE id=?",Timestamp.from(now),id);
             jdbc.update("UPDATE mfa_lifecycle_guard SET failed_attempts=0,locked_until=NULL WHERE user_id=?",current.user);
             fence(current.user,false,now);accounts.audit(current.user,"MFA_"+current.mode+"_COMMITTED");return true;

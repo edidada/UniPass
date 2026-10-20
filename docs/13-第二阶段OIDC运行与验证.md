@@ -30,7 +30,8 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_SESSION_NAMESPACE` / `UNIPASS_REDIS_GENERATION_KEY` | 默认会话 namespace 与安全 marker key；同一部署所有实例一致，ACL 还须允许 INFO server |
 | `UNIPASS_ISSUER` | 外部固定 HTTPS issuer；不能含凭证、query、fragment |
 | `UNIPASS_SIGNING_STORE` / `UNIPASS_SIGNING_PASSWORD` / `UNIPASS_SIGNING_ALIAS` | 外置 PKCS12 文件、密码与当前 RSA alias |
-| `UNIPASS_MFA_KEY` | 必填，Base64 编码的随机 32 字节 MFA 加密 key，见 MFA 运行记录 |
+| `UNIPASS_MFA_KEY` | legacy 因素的 Base64 随机 32 字节 key；仍有 V1 引用或 legacy 未退役时须保留 |
+| `UNIPASS_MFA_KEYS_JSON` | 命名 MFA key ring；与 PG writer/退役状态共同校验，见 [轮换流程](22-MFA加密主密钥轮换.md) |
 | `UNIPASS_PORT` | 默认 8080；TLS 接入与可信代理边界由部署配置负责 |
 | `UNIPASS_DIRECTORY_TYPE` | `AD` 或 `OPENLDAP` |
 | `UNIPASS_LDAP_URL` / `UNIPASS_LDAP_BASE_DN` | LDAPS 地址及搜索根 |
@@ -39,7 +40,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_LDAP_WRITABLE_CONFIRMED` | 真实写权限核验后设 true；默认 false |
 | `UNIPASS_PASSWORD_HISTORY_VERIFIED` / `UNIPASS_RESET_HISTORY_VERIFIED` | 分别核验目录用户改密与重置历史策略后设 true；默认拒绝相应写入 |
 
-目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V8；因素恢复状态的签发限制见 [因素生命周期](18-MFA因素轮换与受控恢复.md)。V8 要求旧认证重新登录建立 sid 映射，保留 BLOCKED 操作的 fenced epoch。迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
+目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V9；因素恢复状态的签发限制见 [因素生命周期](18-MFA因素轮换与受控恢复.md)。V8 要求旧认证重新登录建立 sid 映射，保留 BLOCKED 操作的 fenced epoch；V9 增加 MFA writer 控制、旧密文写入保护及 [主密钥轮换](22-MFA加密主密钥轮换.md)。迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
 
 ```powershell
 java -jar iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
@@ -82,4 +83,4 @@ pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable '完整路径/redi
 
 需要 JDK 17、Maven 3.9、可执行 Redis；PG 17.6 由测试库启动，Redis 由测试在随机 loopback 端口独立启动、设置随机密码且关闭持久化，退出回收自有进程。LDAP 网关测试使用本地 TLS 服务器；OIDC HTTP 用例中的目录为测试适配器，因此不能作为真实企业目录认证验收。报告保存在各模块 `target/surefire-reports`、`target/failsafe-reports`。
 
-尚需：短信/飞书验证适配、MFA 主 key 重加密/轮换与真实恢复渠道、SAML IdP 能力验证、跨站浏览器 RP/BFF 验收和移动端、多实例/RP 缓存签名轮换、Redis 主备恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。
+MFA 主 key 重加密与轮换已增加 V9，见 [运行设计](22-MFA加密主密钥轮换.md)。尚需：短信/飞书验证适配、真实恢复渠道与 key 备份/多节点演练、SAML IdP 能力验证、跨站浏览器 RP/BFF 验收和移动端、多实例/RP 缓存签名轮换、Redis 主备恢复、生产 LDAP/AD 联调、容量压测与五秒吊销证据、授权数据清理、集中指标和安全扫描。T2/T3 与 P2 均保持未整体验收。

@@ -49,7 +49,8 @@ unipass:
     email:
       enabled: ${UNIPASS_RECOVERY_EMAIL_ENABLED:false}
   mfa:
-    key: ${UNIPASS_MFA_KEY}
+    key: ${UNIPASS_MFA_KEY:}
+    keys-json: ${UNIPASS_MFA_KEYS_JSON:}
   issuer: ${UNIPASS_ISSUER}
   signing:
     store: ${UNIPASS_SIGNING_STORE}

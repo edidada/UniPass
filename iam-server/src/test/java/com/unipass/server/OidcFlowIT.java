@@ -44,6 +44,7 @@ class OidcFlowIT {
     @Autowired FakeDirectory directory;
     @Autowired DigestAuthorizationService authorizations;
     @Autowired MfaService mfa;
+    @Autowired MfaKeyService factorKeys;
     @Autowired MfaLifecycleService factors;
     @Autowired EmailRecoveryService recovery;
     @Autowired RecoveryMailWorker mailWorker;
@@ -91,10 +92,12 @@ class OidcFlowIT {
         props.add("unipass.signing.store", () -> signingStore.toString()); props.add("unipass.signing.password", () -> "test-only-password"); props.add("unipass.signing.alias", () -> "current");
         props.add("unipass.password.history-verified", () -> true);
         props.add("unipass.mfa.key", () -> Base64.getEncoder().encodeToString(new byte[32]));
+        props.add("unipass.mfa.keys-json", () -> "{\"next\":\""+nextFactorKey()+"\"}");
         props.add("unipass.jobs.enabled", () -> false);
         props.add("unipass.password.reset-history-verified", () -> true);
     }
     @BeforeEach void seed() {
+        factorKeys.activate("legacy","test:fixture","test:reset");
         jdbc.execute("TRUNCATE oauth2_authorization CASCADE"); jdbc.execute("TRUNCATE import_source CASCADE");
         user=UUID.randomUUID(); directory.password=OLD;mail.reset();
         var resetKeys=redisTemplate.keys("unipass:reset:*");if(resetKeys!=null && !resetKeys.isEmpty())redisTemplate.delete(resetKeys);
@@ -349,6 +352,18 @@ class OidcFlowIT {
     }
     private IdentityPrincipal principal(){return new IdentityPrincipal(user,0,Instant.now(),List.of("ROLE_USER"));}
     private IdentityPrincipal strongPrincipal(){return principal().withMfa(Instant.now());}
+    private static String nextFactorKey(){byte[] raw=new byte[32];Arrays.fill(raw,(byte)1);return Base64.getEncoder().encodeToString(raw);}
+    @Test void masterKeySwitchKeepsLiveAuthorizationAndConfirmsLegacyPendingWithCurrentWriter()throws Exception{
+        HttpClient strong=administrator();var old=tokens(strong,"web");
+        var started=postJson(strong,"/api/mfa/rotation",Map.of());assertEquals(200,started.statusCode(),started.body());var replacement=json.readTree(started.body());
+        byte[] secret=new org.apache.commons.codec.binary.Base32().decode(replacement.get("secret").asText());
+        assertTrue(factorKeys.activate("next","test:operator","ticket:master-key"));
+        assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));assertEquals(200,api(old.get("access_token").asText()).statusCode());
+        assertEquals(200,postJson(strong,"/api/mfa/changes/"+replacement.get("id").asText()+"/confirm",Map.of("code",otp(secret,Instant.now()))).statusCode());
+        assertEquals("next",MfaSecretCipher.keyId(jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user)));
+        assertEquals(401,api(old.get("access_token").asText()).statusCode());
+        HttpClient fresh=browser();login(fresh);stepUp(fresh,secret,Instant.now().plusSeconds(30));assertEquals(200,api(tokens(fresh,"web").get("access_token").asText()).statusCode());
+    }
     private IdentityPrincipal recoveryOperator(){
         jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_MFA_RECOVERY')",user);
         seedFactor();return strongPrincipal();
