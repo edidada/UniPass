@@ -40,6 +40,10 @@ V8 在安装触发器后，使 ACTIVE/OPEN 身份 epoch 递增并撤销已有授
 
 `BackchannelMigrationIT` 在真实 PG 先安装 V7、写入 OPEN/BLOCKED 身份及旧授权，再升级 V8，验证旧认证撤销、BLOCKED epoch 保留、gate fence 入队、重复 fence 不重复任务，以及删除授权后投递账本保留。
 
-全量命令为 `scripts/verify-all.ps1 -RedisExecutable <Redis 路径>`，报告位于各模块 target 目录；Gradle 分支使用等价集成任务。双构建执行结果在验证完成后追加。真实 HTTPS 跨主机浏览器、RP 多实例/Redis 主备、JWKS 滚动轮换、规模与 P99/五秒目标仍待验收。
+全量命令为 `scripts/verify-all.ps1 -RedisExecutable <Redis 路径>`，报告位于各模块 target 目录；Gradle 分支使用等价集成任务。真实 HTTPS 跨主机浏览器、RP 多实例/Redis 主备、JWKS 滚动轮换、规模与 P99/五秒目标仍待验收。
 
-2026-10-20 22:38:22（Asia/Shanghai），JDK 17.0.12 / Maven 3.9.11 定向验证成功，约 103 秒。V7→V8 升级 1 项及独立 RP 15 项均通过，失败/错误/跳过为 0。包含缺少 aud/sid/jti 和单族退出后的重新认证/迟到通知。最终源码的全量与 Gradle 验证仍待记录，不以较早的 110 项结果证明后续增量。
+2026-10-20 22:41:58（Asia/Shanghai），JDK 17.0.12 / Maven 3.9.11 最终源码全量验证成功，约 176 秒，五模块 **111 项**，失败/错误/跳过均为 0。包含客户端注册 3、V7→V8 升级 1、原 OIDC 集成 42、独立 RP 集成 15；覆盖缺少 aud/sid/jti 和单族退出后的重新认证/迟到通知。功能提交 `64eebe5`；未将此前较早结果作为新增检查的证据。
+
+2026-10-20 22:42:58（Asia/Shanghai），Gradle Wrapper 8.14.3 / JDK 17 的 `clean build --offline` 成功，用时 203 秒，37 个任务全部执行，**111 项**测试失败/错误/跳过均为 0。构建分支 `build/gradle-jdk17` 的功能合并提交 `35c1442`，复用本机依赖缓存，不借用 Maven 产物。IAM 的 80 个、RP 的 67 个 BOOT-INF/lib 文件名称与版本清单分别与 Maven 完全一致；两分支模块源码一致。
+
+文档相对链接及两份 OpenAPI 的本地引用已检查；IAM 业务路径 24 个，RP 路径增为 9 个。当前没有 Git remote，`gh run list --limit 1` 返回无法确定仓库，因此本次未推送且远程 Actions 未验证。两种本地成功不替代远程运行、生产联调或 P2–P5 全部验收。
