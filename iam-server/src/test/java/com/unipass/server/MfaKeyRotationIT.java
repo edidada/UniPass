@@ -41,6 +41,15 @@ class MfaKeyRotationIT {
     }
     private byte[] factor(UUID user){return jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user);}
     private void activate(){assertTrue(keys.introduce("next",ACTOR,EVIDENCE));assertFalse(keys.introduce("next",ACTOR,EVIDENCE));assertTrue(keys.activate("next",ACTOR,EVIDENCE));}
+    @Test void firstBootstrapCannotPinWrongLegacyMaterial()throws Exception{
+        // Recreate V9's pre-bootstrap metadata while retaining the V8 ciphertext.
+        jdbc.execute("UPDATE mfa_encryption_control SET active_key=NULL");jdbc.execute("DELETE FROM mfa_encryption_key");jdbc.execute("DELETE FROM mfa_key_audit");
+        var wrong=new MockEnvironment().withProperty("unipass.mfa.key",key(2));
+        assertThrows(IllegalStateException.class,()->new MfaKeyService(jdbc,tx,wrong));
+        assertNull(jdbc.queryForObject("SELECT active_key FROM mfa_encryption_control",String.class));
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM mfa_encryption_key",Integer.class));assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM mfa_key_audit",Integer.class));
+        assertEquals(2,service(true,Map.of()).verify());assertArrayEquals(secret,service(true,Map.of()).decrypt(USER,factor(USER)));
+    }
     @Test void stagedUpgradeRekeysActiveAndPendingWithoutChangingSecurityState()throws Exception{
         var before=jdbc.queryForMap("SELECT enabled,last_used_step,failed_attempts,locked_until,pending_expires_at,created_at FROM mfa_totp WHERE user_id=?",USER);
         var pendingBefore=jdbc.queryForMap("SELECT state,auth_epoch,session_digest,expires_at,created_at FROM mfa_factor_change WHERE id=?",change);

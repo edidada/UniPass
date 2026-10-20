@@ -22,7 +22,10 @@ public final class MfaKeyService {
                 active=cipher.ids().contains(MfaSecretCipher.LEGACY)?MfaSecretCipher.LEGACY:cipher.ids().size()==1?cipher.ids().iterator().next():null;
                 if(active==null)throw new IllegalStateException("Initial factor writer is ambiguous");
                 for(String id:cipher.ids())jdbc.update("INSERT INTO mfa_encryption_key(key_id,fingerprint,state) VALUES (?,?,'AVAILABLE')",id,cipher.fingerprint(id));
-                jdbc.update("UPDATE mfa_encryption_control SET active_key=? WHERE singleton",active);audit("BOOTSTRAPPED",null,active,"startup","initial-key-configuration",0);
+                jdbc.update("UPDATE mfa_encryption_control SET active_key=? WHERE singleton",active);
+                // Do not pin a misconfigured legacy fingerprint during a V8 upgrade.
+                // Existing tags must authenticate before any bootstrap metadata commits.
+                verifyLocked();audit("BOOTSTRAPPED",null,active,"startup","initial-key-configuration",0);
             }
             for(String id:jdbc.queryForList("SELECT key_id FROM mfa_encryption_key WHERE state='AVAILABLE'",String.class))requireKey(id);
             requireKey(active);
