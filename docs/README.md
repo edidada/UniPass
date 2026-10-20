@@ -29,6 +29,7 @@
 | [19-独立Web应用与BFF接入](19-独立Web应用与BFF接入.md) |
 | [20-编码进度快照](20-编码进度快照.md) |
 | [21-OIDC后端退出通知](21-OIDC后端退出通知.md) |
+| [22-MFA加密主密钥轮换](22-MFA加密主密钥轮换.md) |
 | [依赖基线](dependencies.md) |
 | [业务接口 OpenAPI 3.1](openapi.json) |
 | [独立 RP/BFF 接口 OpenAPI 3.1](web-openapi.json) |

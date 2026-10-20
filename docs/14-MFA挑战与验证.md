@@ -8,7 +8,7 @@
 
 注册要求当前密码认证距今不超过 5 分钟。pending secret 5 分钟内必须以有效 TOTP 确认；已启用的因素不能被注册接口覆盖。确认与用户 `auth_epoch++` 在同一 PG 事务，旧会话及令牌失效，必须重新密码登录。启用时的 TOTP 时间步已消费，不能在紧接着的 MFA 再使用同一步，需要等待下一步或输入尚未消费的有效时间步。
 
-服务启动新增必填 `UNIPASS_MFA_KEY`：Base64 编码的 32 字节随机 AES key，由 secret 管理注入，多实例保持一致。示例只生成值，不输出密钥：
+V1 因素使用 `UNIPASS_MFA_KEY`：Base64 编码的 32 字节随机 AES key，由 secret 管理注入，多实例保持一致。V9 新增命名 key ring 和轮换 CLI；仍有 legacy 引用或 AVAILABLE legacy key 时继续保留原值。示例只生成值，不输出密钥：
 
 ```powershell
 $mfaKeyBytes = [byte[]]::new(32)
@@ -19,7 +19,7 @@ $env:UNIPASS_MFA_KEY = [Convert]::ToBase64String($mfaKeyBytes)
 
 真实部署必须将生成结果安全保存到企业 secret 管理，不要每次进程启动重新生成。数据库仅保存带随机 nonce 的 AES-256-GCM envelope；AAD 绑定用户不可变 UUID，密文被篡改或挪给其他用户会拒绝解密。响应与 DTO 的字符串表示脱敏，OTP/密钥不进入审计。
 
-当前 envelope 为 v1、单外置 key，尚未实现多 key 在线重加密与轮换工具。丢失 key 会导致原因素不可用；密钥备份恢复、硬件认证器和恢复码仍是后续交付。因素轮换与受控退役/恢复已新增 V7，见 [因素生命周期](18-MFA因素轮换与受控恢复.md)；不能靠手工删除因素记录代替该流程。
+V9 保留 V1 解密并增加绑定 key id/owner 的 V2 envelope、数据库 writer 控制、分批重加密及旧 key 退役，见 [主密钥轮换](22-MFA加密主密钥轮换.md)。丢失 key 会导致原因素不可用；密钥备份恢复演练、硬件认证器和恢复码仍是后续交付。因素轮换与受控退役/恢复见 [因素生命周期](18-MFA因素轮换与受控恢复.md)；不能靠手工删除因素记录代替该流程。
 
 ## 授权与挑战
 

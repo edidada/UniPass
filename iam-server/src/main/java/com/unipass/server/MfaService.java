@@ -2,7 +2,6 @@ package com.unipass.server;
 
 import com.eatthepath.otp.TimeBasedOneTimePasswordGenerator;
 import org.apache.commons.codec.binary.Base32;
-import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -23,11 +22,11 @@ public final class MfaService {
     private final TransactionTemplate tx;
     private final AccountState accounts;
     private final Clock clock;
-    private final MfaSecretCipher cipher;
+    private final MfaKeyService cipher;
     private final TimeBasedOneTimePasswordGenerator totp=new TimeBasedOneTimePasswordGenerator();
-    public MfaService(JdbcTemplate jdbc,TransactionTemplate tx,AccountState accounts,Clock clock,Environment env) {
+    public MfaService(JdbcTemplate jdbc,TransactionTemplate tx,AccountState accounts,Clock clock,MfaKeyService cipher) {
         this.jdbc=jdbc;this.tx=tx;this.accounts=accounts;this.clock=clock;
-        cipher=new MfaSecretCipher(env.getRequiredProperty("unipass.mfa.key"));
+        this.cipher=cipher;
     }
     public record Enrollment(String secret,String otpauthUri,Instant expiresAt) {
         @Override public String toString(){return "Enrollment[REDACTED]";}
@@ -120,6 +119,7 @@ public final class MfaService {
         return matched;
     }
     byte[] encrypt(UUID user,byte[] secret){return cipher.encrypt(user,secret);}
+    byte[] reencrypt(UUID user,byte[] encrypted){return cipher.reencrypt(user,encrypted);}
     Enrollment enrollment(UUID user,byte[] secret,Instant expires){
         String encoded=new Base32().encodeAsString(secret).replace("=","");
         String label=URLEncoder.encode("UniPass:"+user,StandardCharsets.UTF_8);
