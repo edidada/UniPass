@@ -56,7 +56,8 @@ public class RpSecurity {
             var current=SecurityContextHolder.getContext().getAuthentication();
             if(!(raw instanceof String token) || !(current instanceof OAuth2AuthenticationToken login) || !(login.getPrincipal() instanceof OidcUser user))throw new OAuth2AuthorizationException(new OAuth2Error("invalid_grant"));
             Jwt jwt=decoders.createDecoder(request.getClientRegistration()).decode(token);
-            if(!user.getSubject().equals(jwt.getSubject()) || !Objects.equals(user.getIdToken().getClaim("auth_epoch"),jwt.getClaim("auth_epoch")))throw new OAuth2AuthorizationException(new OAuth2Error("invalid_grant"));
+            if(!user.getSubject().equals(jwt.getSubject()) || !Objects.equals(user.getIdToken().getClaim("auth_epoch"),jwt.getClaim("auth_epoch"))
+                    || !Objects.equals(user.getIdToken().getClaim("sid"),jwt.getClaim("sid")))throw new OAuth2AuthorizationException(new OAuth2Error("invalid_grant"));
             var next=new DefaultOidcUser(user.getAuthorities(),new OidcIdToken(token,jwt.getIssuedAt(),jwt.getExpiresAt(),jwt.getClaims()),user.getUserInfo(),"sub");
             var context=SecurityContextHolder.createEmptyContext();context.setAuthentication(new OAuth2AuthenticationToken(next,login.getAuthorities(),login.getAuthorizedClientRegistrationId()));
             SecurityContextHolder.setContext(context);var servlet=(ServletRequestAttributes)RequestContextHolder.currentRequestAttributes();
@@ -76,7 +77,11 @@ public class RpSecurity {
                         }));
         return http.build();
     }
-    @Bean @Order(2) SecurityFilterChain browser(HttpSecurity http,ClientRegistrationRepository clients,OAuth2AuthorizedClientRepository repository,OAuth2AuthorizedClientManager manager,LiveAccessDecoder decoder,RpSettings settings)throws Exception{
+    @Bean @Order(2) SecurityFilterChain backchannel(HttpSecurity http)throws Exception{
+        http.securityMatcher("/logout/backchannel").authorizeHttpRequests(auth->auth.anyRequest().permitAll()).csrf(csrf->csrf.disable())
+                .sessionManagement(session->session.sessionCreationPolicy(org.springframework.security.config.http.SessionCreationPolicy.STATELESS));return http.build();
+    }
+    @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http,ClientRegistrationRepository clients,OAuth2AuthorizedClientRepository repository,OAuth2AuthorizedClientManager manager,LiveAccessDecoder decoder,RpSettings settings,BackchannelSessions sessions)throws Exception{
         var resolver=new DefaultOAuth2AuthorizationRequestResolver(clients,"/oauth2/authorization");resolver.setAuthorizationRequestCustomizer(OAuth2AuthorizationRequestCustomizers.withPkce());
         var code=new DefaultAuthorizationCodeTokenResponseClient();code.setRestOperations(RpConfiguration.oauthHttp());
         var userInfo=new DefaultOAuth2UserService();userInfo.setRestOperations(RpConfiguration.http());var oidc=new OidcUserService();oidc.setOauth2UserService(userInfo);
@@ -85,11 +90,17 @@ public class RpSecurity {
                 .exceptionHandling(errors->errors.authenticationEntryPoint((request,response,error)->response.setStatus(401)))
                 .oauth2Login(login->login.authorizedClientRepository(repository).authorizationEndpoint(endpoint->endpoint.authorizationRequestResolver(resolver))
                         .tokenEndpoint(endpoint->endpoint.accessTokenResponseClient(code)).userInfoEndpoint(endpoint->endpoint.oidcUserService(oidc))
-                        .defaultSuccessUrl(settings.origin+"/",true).failureHandler((request,response,error)->response.setStatus(401)))
+                        .successHandler((request,response,authentication)->{
+                            try{
+                                var user=(OidcUser)authentication.getPrincipal();
+                                if(sessions.bind(request.getSession().getId(),user)){response.sendRedirect(settings.origin+"/");return;}
+                            }catch(RuntimeException unavailable){response.setStatus(503);}
+                            request.getSession().invalidate();SecurityContextHolder.clearContext();if(response.getStatus()!=503)response.setStatus(401);
+                        }).failureHandler((request,response,error)->response.setStatus(401)))
                 .logout(config->config.logoutSuccessHandler(logout).deleteCookies(settings.cookie));
         http.headers(headers->headers.contentSecurityPolicy(policy->policy.policyDirectives("default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"))
                 .referrerPolicy(policy->policy.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER)));
-        http.addFilterAfter(new BffStateFilter(manager,decoder),SecurityContextHolderFilter.class);
+        http.addFilterAfter(new BffStateFilter(manager,decoder,sessions),SecurityContextHolderFilter.class);
         http.addFilterBefore(new OncePerRequestFilter(){
             @Override protected void doFilterInternal(HttpServletRequest request,HttpServletResponse response,FilterChain chain)throws IOException,ServletException{
                 if(!Set.of("GET","HEAD","OPTIONS").contains(request.getMethod()) && !settings.origin.equals(request.getHeader("Origin"))){response.setStatus(403);return;}

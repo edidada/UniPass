@@ -12,8 +12,10 @@ public class RecoveryJobs {
     private final RecoveryMailWorker mail;private final PasswordChangeService passwords;
     private final RedisSecurityState security;
     private final MfaLifecycleService factors;
+    private final BackchannelLogoutWorker logout;
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(RecoveryJobs.class);
-    public RecoveryJobs(RecoveryMailWorker mail,PasswordChangeService passwords,RedisSecurityState security,MfaLifecycleService factors){this.mail=mail;this.passwords=passwords;this.security=security;this.factors=factors;}
+    public RecoveryJobs(RecoveryMailWorker mail,PasswordChangeService passwords,RedisSecurityState security,MfaLifecycleService factors,BackchannelLogoutWorker logout){this.mail=mail;this.passwords=passwords;this.security=security;this.factors=factors;this.logout=logout;}
+    @Scheduled(fixedDelayString="${unipass.jobs.logout-delay-ms:1000}") void logout(){try{logout.runOnce();}catch(RuntimeException e){LOG.warn("Back-channel logout delivery unavailable");}}
     @Scheduled(fixedDelayString="${unipass.jobs.security-delay-ms:1000}") void security(){
         try{security.recoverIfNeeded();}catch(RuntimeException e){LOG.warn("Redis authentication recovery unavailable");}
     }

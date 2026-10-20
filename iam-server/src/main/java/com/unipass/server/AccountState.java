@@ -25,6 +25,10 @@ public class AccountState {
     public boolean mustChange(UUID id) {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT must_change_password FROM iam_user WHERE id=?", Boolean.class, id));
     }
+    public boolean backchannelRequiresReauthentication(IdentityPrincipal principal,String client){
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM oidc_logout_task WHERE user_id=? AND client_id=? AND login_authenticated_at=?)",Boolean.class,
+                principal.getUserId(),client,java.sql.Timestamp.from(principal.getAuthenticatedAt())));
+    }
     public void lockAndRequire(UUID id, long epoch) {
         var observed=security.current();
         List<Boolean> rows = jdbc.query("SELECT status='ACTIVE' AND password_gate='OPEN' AND auth_epoch=? AND EXISTS(SELECT 1 FROM auth_runtime_state WHERE singleton AND redis_generation=?::uuid AND redis_run_id=?) FROM iam_user WHERE id=? FOR UPDATE", (r,n) -> r.getBoolean(1), epoch,observed.generation(),observed.runId(),id);
