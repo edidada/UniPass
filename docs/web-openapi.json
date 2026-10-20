@@ -3,7 +3,7 @@
   "info": {
     "title": "UniPass independent RP/BFF sample",
     "version": "0.1.0",
-    "description": "RP origin endpoints, distinct from the IAM business API. All writes require exact Origin and CSRF. Bearer credentials never appear in BFF responses."
+    "description": "RP origin endpoints, distinct from IAM. Browser writes require exact Origin and CSRF; back-channel logout uses a signed JWT and replay protection. Bearer credentials never appear in BFF responses."
   },
   "security": [
     {
@@ -152,6 +152,47 @@
           },
           "403": {
             "description": "Origin or CSRF rejected"
+          }
+        }
+      }
+    },
+    "/logout/backchannel": {
+      "post": {
+        "operationId": "rpBackchannelLogout",
+        "security": [],
+        "description": "Server-to-server signed RS256 logout JWT. Requires fixed issuer, own audience, logout+jwt, events, bounded iat/exp, sid and unique jti; optional sub must match bound sessions. No Cookie, Origin or CSRF required. Query parameters are rejected. sid is mandatory in this registration profile.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "logout_token"
+                ],
+                "properties": {
+                  "logout_token": {
+                    "type": "string",
+                    "maxLength": 8192,
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "sid revoked and local sessions removed atomically; Cache-Control: no-store"
+          },
+          "400": {
+            "description": "Missing, invalid, mismatched, duplicate or replayed notification"
+          },
+          "415": {
+            "description": "Unsupported content type"
+          },
+          "503": {
+            "description": "Signature key or session store unavailable; no success confirmation"
           }
         }
       }

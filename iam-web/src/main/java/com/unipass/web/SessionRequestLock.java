@@ -18,7 +18,7 @@ final class SessionRequestLock implements Filter {
     @Override public void doFilter(ServletRequest rawRequest,ServletResponse rawResponse,FilterChain chain)throws IOException,ServletException{
         var request=(HttpServletRequest)rawRequest;var response=(HttpServletResponse)rawResponse;String cookie=null;
         if(request.getCookies()!=null)for(Cookie candidate:request.getCookies())if(settings.cookie.equals(candidate.getName()))cookie=candidate.getValue();
-        if(cookie==null || request.getRequestURI().startsWith("/api/resource/")){chain.doFilter(request,response);return;}
+        if(cookie==null || request.getRequestURI().startsWith("/api/resource/") || request.getRequestURI().equals("/logout/backchannel")){chain.doFilter(request,response);return;}
         String key=settings.namespace+":request:"+digest(cookie),owner=UUID.randomUUID().toString();
         try{
             if(!Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(key,owner,Duration.ofSeconds(60)))){response.setStatus(409);response.setHeader("Retry-After","1");return;}

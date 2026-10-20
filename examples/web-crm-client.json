@@ -4,5 +4,6 @@
   "kind": "CONFIDENTIAL",
   "redirect_uris": ["https://crm.example.test/login/oauth2/code/unipass"],
   "post_logout_redirect_uris": ["https://crm.example.test/"],
-  "scopes": ["openid", "profile", "api.read"]
+  "scopes": ["openid", "profile", "api.read"],
+  "backchannel_logout_uri": "https://crm.example.test/logout/backchannel"
 }

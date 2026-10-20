@@ -37,6 +37,7 @@ class IndependentRpIT {
     private static final String PASSWORD="Qx!7vN2$pk",NEXT="Rz@8mP4#st",STORE_PASSWORD="rp-test-store-password";
     private final ObjectMapper json=new ObjectMapper();private final List<Process> owned=new ArrayList<>();
     private final Map<String,String> sessionKeys=new HashMap<>();
+    private Path signingStore;private com.unipass.server.BackchannelLogoutWorker logoutWorker;
     private Path root;private EmbeddedPostgres pg;private InMemoryDirectoryServer ldap;private HttpServer proxy;private ExecutorService proxyPool;
     private LettuceConnectionFactory redis;private JdbcTemplate jdbc;private UUID user,anchor;
     private int iamPort,proxyPort,redisPort;private String redisPassword;private final Map<String,Integer> rpPorts=new LinkedHashMap<>();
@@ -69,7 +70,7 @@ class IndependentRpIT {
     }
     @BeforeAll void start()throws Exception{
         root=Files.createDirectories(Path.of("target","independent-rp")).toAbsolutePath();iamPort=port();proxyPort=port();redisPort=port();rpPorts.put("crm",port());rpPorts.put("hrm",port());
-        Path keys=root.resolve("test-"+UUID.randomUUID()+".p12");
+        Path keys=root.resolve("test-"+UUID.randomUUID()+".p12");signingStore=keys;
         Process keytool=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin",System.getProperty("os.name").startsWith("Windows")?"keytool.exe":"keytool").toString(),"-genkeypair","-alias","current","-keyalg","RSA","-keysize","2048","-validity","2","-dname","CN=localhost","-ext","SAN=dns:localhost","-storetype","PKCS12","-keystore",keys.toString(),"-storepass",STORE_PASSWORD,"-noprompt")
                 .redirectErrorStream(true).redirectOutput(root.resolve("keytool.log").toFile()).start();
         try{assertTrue(keytool.waitFor(20,TimeUnit.SECONDS));assertEquals(0,keytool.exitValue());}finally{if(keytool.isAlive())keytool.destroyForcibly();}
@@ -91,11 +92,13 @@ class IndependentRpIT {
         jdbc=new JdbcTemplate(new DriverManagerDataSource(pg.getJdbcUrl("postgres","postgres"),"postgres","test"));user=UUID.randomUUID();
         jdbc.update("INSERT INTO import_source(source_id,cursor_value) VALUES ('rp-test','1')");
         jdbc.update("INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version) VALUES (?,'E001',?,'OPENLDAP','uid=one,dc=example,dc=test','Test User','ACTIVE','rp-test',1)",user,anchor);
+        var keyEnv=new org.springframework.mock.env.MockEnvironment().withProperty("unipass.signing.store",keys.toString()).withProperty("unipass.signing.password",STORE_PASSWORD).withProperty("unipass.signing.alias","current").withProperty("unipass.issuer",issuer());
+        logoutWorker=new com.unipass.server.BackchannelLogoutWorker(jdbc,new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource())),signingKeys(),Clock.systemUTC(),keyEnv);
         var registrar=new ClientRegistrationService(new JdbcRegisteredClientRepository(jdbc),true);
         Path web=Path.of(System.getProperty("test.web.exec.jar","target/iam-web-0.1.0-SNAPSHOT-exec.jar")).toAbsolutePath();
         for(var app:rpPorts.entrySet()){
             String name=app.getKey(),secret=UUID.randomUUID()+"+%:",sessionKey=Base64.getEncoder().encodeToString(UUID.randomUUID().toString().substring(0,32).getBytes(StandardCharsets.UTF_8));sessionKeys.put(name,sessionKey);
-            registrar.register(new ClientRegistrationService.Spec(name,"Independent "+name,ClientRegistrationService.Kind.CONFIDENTIAL,List.of(rp(name)+"/login/oauth2/code/unipass"),List.of(rp(name)+"/"),Set.of("openid","profile","api.read")),secret);
+            registrar.register(new ClientRegistrationService.Spec(name,"Independent "+name,ClientRegistrationService.Kind.CONFIDENTIAL,List.of(rp(name)+"/login/oauth2/code/unipass"),List.of(rp(name)+"/"),Set.of("openid","profile","api.read"),rp(name)+"/logout/backchannel"),secret);
             Process process=launch(name,List.of("-jar",web.toString(),"--server.address=127.0.0.1","--unipass.rp.local-http=true"),Map.of("UNIPASS_RP_PORT",Integer.toString(app.getValue()),"UNIPASS_RP_ID",name,"UNIPASS_RP_ISSUER",issuer(),"UNIPASS_RP_ORIGIN",rp(name),"UNIPASS_RP_CLIENT_SECRET",secret,"UNIPASS_RP_SESSION_KEY",sessionKey,"UNIPASS_RP_REDIS_PORT",Integer.toString(redisPort),"UNIPASS_RP_REDIS_PASSWORD",redisPassword));
             ready(process,rp(name)+"/health",name);
         }
@@ -114,7 +117,7 @@ class IndependentRpIT {
         }catch(Exception failure){try{exchange.sendResponseHeaders(502,-1);}catch(IOException ignored){}}
         finally{exchange.close();}
     }
-    @BeforeEach void reset()throws Exception{introspectionUnavailable.set(false);dropRefreshResponse.set(false);refreshCalls.set(0);jdbc.execute("TRUNCATE oauth2_authorization CASCADE");jdbc.execute("TRUNCATE auth_audit");jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1,password_gate='OPEN',status='ACTIVE' WHERE id=?",user);ldap.modify("uid=one,dc=example,dc=test",new Modification(ModificationType.REPLACE,"userPassword",PASSWORD));}
+    @BeforeEach void reset()throws Exception{introspectionUnavailable.set(false);dropRefreshResponse.set(false);refreshCalls.set(0);jdbc.execute("TRUNCATE oidc_logout_task");jdbc.execute("TRUNCATE oauth2_authorization CASCADE");jdbc.execute("TRUNCATE auth_audit");jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1,password_gate='OPEN',status='ACTIVE' WHERE id=?",user);ldap.modify("uid=one,dc=example,dc=test",new Modification(ModificationType.REPLACE,"userPassword",PASSWORD));}
     private String callback(HttpClient client,String name,boolean credentials,String password)throws Exception{
         var start=get(client,rp(name)+"/oauth2/authorization/unipass");assertEquals(302,start.statusCode(),start.body());String authorization=start.headers().firstValue("Location").orElseThrow();
         assertTrue(authorization.contains("code_challenge_method=S256"),authorization);assertTrue(authorization.contains("nonce="));assertTrue(authorization.contains("state="));
@@ -192,6 +195,112 @@ class IndependentRpIT {
         assertEquals(403,browser.send(HttpRequest.newBuilder(URI.create(rp("crm")+"/logout")).header("Origin",rp("crm")).POST(HttpRequest.BodyPublishers.noBody()).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
         var response=browser.send(HttpRequest.newBuilder(URI.create(rp("crm")+"/logout")).header("Origin",rp("crm")).header(csrf.get("header_name").asText(),csrf.get("token").asText()).POST(HttpRequest.BodyPublishers.noBody()).build(),HttpResponse.BodyHandlers.ofString());assertEquals(302,response.statusCode());String logout=response.headers().firstValue("Location").orElseThrow();assertTrue(logout.startsWith(issuer()+"/oauth/logout"),logout);
         var ended=get(browser,logout);assertEquals(302,ended.statusCode(),ended.body());assertEquals(rp("crm")+"/",ended.headers().firstValue("Location").orElseThrow());assertEquals(401,get(browser,rp("hrm")+"/bff/profile").statusCode());
+    }
+    private com.nimbusds.jose.jwk.source.JWKSource<com.nimbusds.jose.proc.SecurityContext> signingKeys()throws Exception{
+        var store=java.security.KeyStore.getInstance("PKCS12");
+        try(var input=Files.newInputStream(signingStore)){store.load(input,STORE_PASSWORD.toCharArray());}
+        var key=new com.nimbusds.jose.jwk.RSAKey.Builder((java.security.interfaces.RSAPublicKey)store.getCertificate("current").getPublicKey())
+                .privateKey((java.security.interfaces.RSAPrivateKey)store.getKey("current",STORE_PASSWORD.toCharArray())).keyID("current").build();
+        return new com.nimbusds.jose.jwk.source.ImmutableJWKSet<>(new com.nimbusds.jose.jwk.JWKSet(key));
+    }
+    private String logoutToken(String audience,String sid,String subject,Map<String,Object> extra)throws Exception{
+        var claims=org.springframework.security.oauth2.jwt.JwtClaimsSet.builder().issuer(issuer()).audience(List.of(audience)).issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(120)).id(UUID.randomUUID().toString()).claim("sid",sid).claim("events",Map.of("http://schemas.openid.net/event/backchannel-logout",Map.of()));
+        if(subject!=null)claims.subject(subject);extra.forEach((name,value)->{if(value==null)claims.claims(values->values.remove(name));else claims.claim(name,value);});
+        return new org.springframework.security.oauth2.jwt.NimbusJwtEncoder(signingKeys()).encode(org.springframework.security.oauth2.jwt.JwtEncoderParameters.from(org.springframework.security.oauth2.jwt.JwsHeader.with(org.springframework.security.oauth2.jose.jws.SignatureAlgorithm.RS256).keyId("current").type("logout+jwt").build(),claims.build())).getTokenValue();
+    }
+    @Test void durableNotificationDeletesBothRpSessionsWithoutBrowserTrafficAndBlocksRestoredSnapshot()throws Exception{
+        HttpClient browser=browser();login(browser,"crm",true);login(browser,"hrm",false);Stored crm=stored(browser,"crm",false),hr=stored(browser,"hrm",false);Map<byte[],byte[]> snapshot;
+        try(var c=redis.getConnection()){snapshot=c.hashCommands().hGetAll(hr.key.getBytes(StandardCharsets.UTF_8));}
+        jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",user);
+        assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM oidc_logout_task WHERE state='PENDING'",Integer.class));
+        assertTrue(logoutWorker.runOnce());assertTrue(logoutWorker.runOnce());assertFalse(logoutWorker.runOnce());
+        assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM oidc_logout_task WHERE state='SENT'",Integer.class));
+        try(var c=redis.getConnection()){
+            assertFalse(c.keyCommands().exists(crm.key.getBytes(StandardCharsets.UTF_8)));assertFalse(c.keyCommands().exists(hr.key.getBytes(StandardCharsets.UTF_8)));
+            c.hashCommands().hMSet(hr.key.getBytes(StandardCharsets.UTF_8),snapshot);c.keyCommands().expire(hr.key.getBytes(StandardCharsets.UTF_8),60);
+        }
+        var template=new org.springframework.data.redis.core.StringRedisTemplate(redis);
+        var settings=new com.unipass.web.RpSettings(new org.springframework.mock.env.MockEnvironment().withProperty("unipass.rp.id","crm").withProperty("unipass.rp.secret",crm.client.getClientRegistration().getClientSecret())
+                .withProperty("unipass.rp.issuer",issuer()).withProperty("unipass.rp.origin",rp("crm")).withProperty("unipass.rp.local-http","true").withProperty("server.address","127.0.0.1"));
+        assertFalse(new com.unipass.web.BackchannelSessions(template,settings).bind(UUID.randomUUID().toString(),crm.user));
+        assertEquals(401,get(browser,rp("hrm")+"/bff/profile").statusCode());
+    }
+    @Test void signedLogoutValidatesAudienceEventsNonceTimeSubjectAndJtiWithoutBrowserCredentials()throws Exception{
+        HttpClient browser=browser();login(browser,"crm",true);Stored stored=stored(browser,"crm",false);String sid=stored.user.getIdToken().getClaimAsString("sid");
+        String valid=logoutToken("crm",sid,user.toString(),Map.of());String[] parts=valid.split("\\.");byte[] signature=Base64.getUrlDecoder().decode(parts[2]);signature[0]^=1;
+        String forged=parts[0]+"."+parts[1]+"."+Base64.getUrlEncoder().withoutPadding().encodeToString(signature);
+        for(String invalid:List.of(forged,logoutToken("crm",sid,user.toString(),Collections.singletonMap("aud",null)),logoutToken("crm",sid,user.toString(),Collections.singletonMap("sid",null)),logoutToken("crm",sid,user.toString(),Collections.singletonMap("jti",null)),logoutToken("hrm",sid,user.toString(),Map.of()),logoutToken("crm",sid,user.toString(),Map.of("nonce","forbidden")),logoutToken("crm",sid,user.toString(),Map.of("events",Map.of())),logoutToken("crm",sid,UUID.randomUUID().toString(),Map.of()),logoutToken("crm",sid,user.toString(),Map.of("iat",Instant.now().minusSeconds(600))),
+                logoutToken("crm",sid,user.toString(),Map.of("iat",Instant.now().plusSeconds(90))),logoutToken("crm",sid,user.toString(),Map.of("iat",Instant.now().minusSeconds(120),"exp",Instant.now().minusSeconds(1))),logoutToken("crm",sid,user.toString(),Map.of("iss","https://wrong.example.test")))){
+            assertEquals(400,form(browser(),rp("crm")+"/logout/backchannel",Map.of("logout_token",invalid)).statusCode());
+            assertEquals(200,get(browser,rp("crm")+"/bff/profile").statusCode());
+        }
+        assertEquals(400,form(browser(),rp("crm")+"/logout/backchannel",Map.of("logout_token",stored.user.getIdToken().getTokenValue())).statusCode());
+        assertEquals(400,form(browser(),rp("crm")+"/logout/backchannel",Map.of()).statusCode());
+        assertEquals(400,form(browser(),rp("crm")+"/logout/backchannel?logout_token="+encode(valid),Map.of()).statusCode());
+        var request=HttpRequest.newBuilder(URI.create(rp("crm")+"/logout/backchannel")).timeout(Duration.ofSeconds(10)).header("Content-Type","application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString("logout_token="+encode(valid))).build();
+        var first=browser().sendAsync(request,HttpResponse.BodyHandlers.ofString());var second=browser().sendAsync(request,HttpResponse.BodyHandlers.ofString());
+        assertEquals(List.of(200,400),java.util.stream.Stream.of(first.get(),second.get()).map(HttpResponse::statusCode).sorted().toList());
+        assertEquals(400,form(browser(),rp("crm")+"/logout/backchannel",Map.of("logout_token",valid)).statusCode());
+        assertEquals(401,get(browser,rp("crm")+"/bff/profile").statusCode());
+    }
+    @Test void failedDeliveryRetriesAndExhaustedLeaseBecomesDead()throws Exception{
+        HttpClient browser=browser();login(browser,"crm",true);jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",user);
+        // Fault injection changes only this test's persisted delivery destination to a closed port.
+        String target=jdbc.queryForObject("SELECT target_uri FROM oidc_logout_task",String.class);
+        jdbc.update("UPDATE oidc_logout_task SET target_uri=?","http://localhost:"+port()+"/logout/backchannel");
+        assertTrue(logoutWorker.runOnce());assertEquals("PENDING",jdbc.queryForObject("SELECT state FROM oidc_logout_task",String.class));
+        jdbc.update("UPDATE oidc_logout_task SET target_uri=?,next_attempt_at=now()-interval '1 second'",target);assertTrue(logoutWorker.runOnce());assertEquals("SENT",jdbc.queryForObject("SELECT state FROM oidc_logout_task",String.class));
+        jdbc.execute("UPDATE oidc_logout_task SET state='RUNNING',attempts=5,lease_until=now()-interval '1 second'");assertFalse(logoutWorker.runOnce());assertEquals("DEAD",jdbc.queryForObject("SELECT state FROM oidc_logout_task",String.class));
+    }
+    @Test void staleWorkerCannotFinishAnotherLeaseAndReclaimedDeliveryUsesFreshJti()throws Exception{
+        HttpClient browser=browser();login(browser,"crm",true);jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",user);
+        var received=new CopyOnWriteArrayList<String>();HttpServer receiver=HttpServer.create(new InetSocketAddress("localhost",0),0);
+        receiver.createContext("/logout/backchannel",exchange->{
+            try{
+                String body=new String(exchange.getRequestBody().readAllBytes(),StandardCharsets.UTF_8);
+                String token=URLDecoder.decode(body.substring("logout_token=".length()),StandardCharsets.UTF_8);
+                received.add(com.nimbusds.jwt.SignedJWT.parse(token).getJWTClaimsSet().getJWTID());
+                if(received.size()==1)jdbc.update("UPDATE oidc_logout_task SET lease_token=?",UUID.randomUUID());
+                exchange.sendResponseHeaders(200,-1);
+            }catch(Exception failure){exchange.sendResponseHeaders(500,-1);}finally{exchange.close();}
+        });receiver.start();
+        try{
+            jdbc.update("UPDATE oidc_logout_task SET target_uri=?","http://localhost:"+receiver.getAddress().getPort()+"/logout/backchannel");
+            assertTrue(logoutWorker.runOnce());assertEquals("RUNNING",jdbc.queryForObject("SELECT state FROM oidc_logout_task",String.class));
+            jdbc.execute("UPDATE oidc_logout_task SET lease_until=now()-interval '1 second'");
+            assertTrue(logoutWorker.runOnce());assertEquals("SENT",jdbc.queryForObject("SELECT state FROM oidc_logout_task",String.class));
+            assertEquals(2,received.size());assertNotEquals(received.get(0),received.get(1));
+            assertEquals(2,jdbc.queryForObject("SELECT attempts FROM oidc_logout_task",Integer.class));
+        }finally{receiver.stop(0);}
+    }
+    @Test void partialHttp200BodyCannotHoldWorkerOrConfirmLogout()throws Exception{
+        HttpClient browser=browser();login(browser,"crm",true);jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",user);
+        var release=new CountDownLatch(1);var entered=new CountDownLatch(1);HttpServer receiver=HttpServer.create(new InetSocketAddress("localhost",0),0);
+        receiver.createContext("/logout/backchannel",exchange->{
+            try{
+                exchange.getRequestBody().readAllBytes();exchange.sendResponseHeaders(200,1000);exchange.getResponseBody().write(0);exchange.getResponseBody().flush();entered.countDown();release.await(10,TimeUnit.SECONDS);
+            }catch(InterruptedException interrupted){Thread.currentThread().interrupt();}finally{exchange.close();}
+        });receiver.start();
+        try{
+            jdbc.update("UPDATE oidc_logout_task SET target_uri=?","http://localhost:"+receiver.getAddress().getPort()+"/logout/backchannel");
+            long start=System.nanoTime();assertTrue(logoutWorker.runOnce());
+            assertTrue(System.nanoTime()-start<Duration.ofSeconds(7).toNanos());assertEquals(0L,entered.getCount());
+            assertEquals("PENDING",jdbc.queryForObject("SELECT state FROM oidc_logout_task",String.class));
+        }finally{release.countDown();receiver.stop(0);}
+    }
+    @Test void rolledBackRevocationCannotPublishNotificationOrInvalidateTheRp()throws Exception{
+        HttpClient browser=browser();login(browser,"crm",true);var tx=new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        tx.executeWithoutResult(status->{jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",user);assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM oidc_logout_task",Integer.class));status.setRollbackOnly();});
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM oidc_logout_task",Integer.class));assertFalse(logoutWorker.runOnce());assertEquals(200,get(browser,rp("crm")+"/bff/profile").statusCode());
+    }
+    @Test void familyLogoutRequiresFreshLoginForThatRpAndLateNotificationCannotDeleteNewSession()throws Exception{
+        HttpClient browser=browser();login(browser,"crm",true);login(browser,"hrm",false);Stored previous=stored(browser,"crm",false);
+        jdbc.execute("UPDATE oauth2_authorization SET revoked=true WHERE id IN (SELECT authorization_id FROM oidc_rp_session WHERE client_id='crm')");
+        assertTrue(logoutWorker.runOnce());assertEquals(401,get(browser,rp("crm")+"/bff/profile").statusCode());assertEquals(200,get(browser,rp("hrm")+"/bff/profile").statusCode());
+        login(browser,"crm",true);Stored current=stored(browser,"crm",false);
+        assertNotEquals(previous.user.getIdToken().getClaimAsString("sid"),current.user.getIdToken().getClaimAsString("sid"));
+        jdbc.execute("UPDATE oidc_logout_task SET state='PENDING',attempts=0,next_attempt_at=now()-interval '1 second'");
+        assertTrue(logoutWorker.runOnce());assertEquals(200,get(browser,rp("crm")+"/bff/profile").statusCode());assertEquals(200,get(browser,rp("hrm")+"/bff/profile").statusCode());
     }
     @AfterAll void close()throws Exception{
         Files.writeString(root.resolve("revocation-observations.md"),"# Local independent RP observations\n\n"+revocationMillis+" milliseconds from password request start through both RP/API rejection. Small local samples; not a percentile/SLA report.\n");

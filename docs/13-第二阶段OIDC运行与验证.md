@@ -12,7 +12,7 @@ RS256 密钥由外置 PKCS12 加载，当前 alias 提供私钥签名，其他 R
 
 Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小时、认证起绝对 24 小时。PG 保存账号 gate 和 epoch，每次浏览器/API 请求检查账号及 PG/Redis 运行代次，查询失败拒绝放行。密码变更、禁用及认证后全局退出使旧 epoch 失效。Redis marker 丢失或进程变化后恢复会撤销授权族，并增加 ACTIVE/OPEN 身份 epoch；旧 JWT 与刷新令牌不能因 Redis 恢复继续使用。整库丢失与进程重启已本地演练，主备和生产恢复待验收。
 
-认证后的 `/logout` 和 RP `/oauth/logout` 执行全局退出，递增身份 epoch 并撤销该用户的授权族；未登录时经框架校验的 ID-token hint 仅撤销对应族。退出重定向必须精确注册，不能任意跳转。该实现保证 UniPass 状态拒绝旧凭证，尚不代表外部 RP 的本地页面会话或飞书会话已清理。
+认证后的 `/logout` 和 RP `/oauth/logout` 执行全局退出，递增身份 epoch 并撤销该用户的授权族；未登录时经框架校验的 ID-token hint 仅撤销对应族。退出重定向必须精确注册，不能任意跳转。V8 为登记了 back-channel URI 的独立 Web RP 增加持久退出通知和接收器，见 [通知运行记录](21-OIDC后端退出通知.md)；不能据此声明未登记 RP、飞书或移动会话已主动清理。
 
 密码到期标志阻止授权与换令牌，但保留已登录的改密和 CSRF 接口。本人改密状态查询允许原会话在初始认证后 5 分钟内读取自己的当前 fence 操作；其他请求拒绝旧 epoch。邮件重置与管理员恢复入口已独立接入，详见 [运行记录](15-密码重置验证与管理员恢复.md)，其能力与权限不能用普通会话替代。
 
@@ -39,7 +39,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_LDAP_WRITABLE_CONFIRMED` | 真实写权限核验后设 true；默认 false |
 | `UNIPASS_PASSWORD_HISTORY_VERIFIED` / `UNIPASS_RESET_HISTORY_VERIFIED` | 分别核验目录用户改密与重置历史策略后设 true；默认拒绝相应写入 |
 
-目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V7；因素恢复状态的签发限制见 [因素生命周期](18-MFA因素轮换与受控恢复.md)。迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
+目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V8；因素恢复状态的签发限制见 [因素生命周期](18-MFA因素轮换与受控恢复.md)。V8 要求旧认证重新登录建立 sid 映射，保留 BLOCKED 操作的 fenced epoch。迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
 
 ```powershell
 java -jar iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
@@ -57,6 +57,8 @@ java '-Dloader.main=com.unipass.server.ClientAdminCli' -cp iam-server/target/iam
 ```
 
 CLI 只需要数据库配置，不启动 Web/Redis/目录。生产 callback 必须 HTTPS；native 允许 reverse-domain 私有 scheme。显式设置 `UNIPASS_ALLOW_LOCAL_CALLBACKS=true` 才允许精确注册 HTTP loopback，端口仍严格匹配。原生生产优先使用已认领的 HTTPS app links。
+
+CONFIDENTIAL Web 客户端可登记 `backchannel_logout_uri`；必须与某个 callback 同源且固定 `/logout/backchannel`，无 query/fragment。详见 [独立 RP 示例](19-独立Web应用与BFF接入.md) 与 [退出通知配置](21-OIDC后端退出通知.md)。客户端已存在时仍拒绝覆盖；动态客户端注册未启用。
 
 ## 协议与业务接口
 

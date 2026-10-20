@@ -29,6 +29,16 @@ final class AuthorizationRequestGuard extends OncePerRequestFilter {
             response.setStatus(400); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"invalid_request\"}"); return;
         }
         var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if(authentication!=null && authentication.getPrincipal() instanceof IdentityPrincipal principal){
+            try{
+                // A family-only logout does not fence the user's other clients. Reusing
+                // this IAM login for the same RP would resurrect its already retired sid.
+                if(accounts.backchannelRequiresReauthentication(principal,clientId)){
+                    if(request.getSession(false)!=null)request.getSession(false).invalidate();
+                    org.springframework.security.core.context.SecurityContextHolder.clearContext();authentication=null;
+                }
+            }catch(RuntimeException unavailable){response.setStatus(503);return;}
+        }
         if (authentication != null && authentication.getPrincipal() instanceof IdentityPrincipal principal && accounts.mustChange(principal.getUserId())) {
             response.setStatus(403); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"password_change_required\"}"); return;
         }

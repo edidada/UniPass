@@ -36,4 +36,12 @@ class ClientRegistrationTest {
             assertThrows(IllegalArgumentException.class,()->service.register(spec("invalid",ClientRegistrationService.Kind.NATIVE,callback),null));
         assertThrows(IllegalArgumentException.class,()->service.register(spec("weak",ClientRegistrationService.Kind.CONFIDENTIAL,"https://rp.example/cb"),"short"));
     }
+    @Test void backchannelOnlyAllowsAnExplicitConfidentialCallbackOrigin(){
+        var service=new ClientRegistrationService(clients,false);String secret="random-test-only-credential-0123456789";
+        var valid=new ClientRegistrationService.Spec("backchannel","Test",ClientRegistrationService.Kind.CONFIDENTIAL,List.of("https://crm.example/cb"),List.of(),Set.of("openid"),"https://crm.example/logout/backchannel");
+        service.register(valid,secret);assertEquals(valid.backchannel(),clients.findByClientId("backchannel").getClientSettings().getSetting("unipass.backchannel_logout_uri"));
+        for(String bad:List.of("https://other.example/logout/backchannel","https://crm.example/logout/backchannel?target=internal","https://crm.example/logout/other","http://127.0.0.1/logout/backchannel"))
+            assertThrows(IllegalArgumentException.class,()->service.register(new ClientRegistrationService.Spec("invalid-backchannel","Test",ClientRegistrationService.Kind.CONFIDENTIAL,valid.redirects(),List.of(),Set.of("openid"),bad),secret));
+        assertThrows(IllegalArgumentException.class,()->service.register(new ClientRegistrationService.Spec("public-backchannel","Test",ClientRegistrationService.Kind.SPA,valid.redirects(),List.of(),Set.of("openid"),valid.backchannel()),null));
+    }
 }

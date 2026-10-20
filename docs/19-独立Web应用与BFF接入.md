@@ -1,6 +1,6 @@
 # 独立 Web 应用与 BFF 接入
 
-2026-10-20。`iam-web` 是 JDK 17 / Spring Boot 3.5.16 的独立进程示例，可部署为 CRM、HR 等不同客户端。授权码、nonce/state、JWT 和 OIDC 退出由 Spring Security 6.5.11 处理。这个增量覆盖 T2/T7 接入基础，不代表 IAM 门户、全部管理页面、后端退出通知或真实跨站浏览器兼容已完成。
+2026-10-20。`iam-web` 是 JDK 17 / Spring Boot 3.5.16 的独立进程示例，可部署为 CRM、HR 等不同客户端。授权码、nonce/state、JWT 和 OIDC 退出由 Spring Security 6.5.11 处理。这个增量覆盖 T2/T7 接入基础，后续增加 [后端退出通知](21-OIDC后端退出通知.md)，不代表 IAM 门户、全部管理页面或真实跨站浏览器兼容已完成。
 
 ## 进程与信任边界
 
@@ -16,7 +16,7 @@ IAM 保存目录、身份、epoch、gate 和授权族；每个 RP 保存自己�
 
 RP Cookie 名为 `UNIPASS_RP_<id>`，path `/`，host-only、HttpOnly、Secure、Lax；默认闲置三十分钟，BFF 另外检查首次 ID token 签发起二十四小时上限。Redis 会话属性（安全上下文、授权请求、authorized client）整体以 AES-256-GCM 加密；随机 nonce，AAD 为 RP namespace。密钥必须在同一 RP 多实例间共享并安全持久保存，不能每次启动生成；不同 RP 应使用不同 key。AES key 在线轮换与历史 envelope 迁移仍未实现。Redis 管理员不能在没有 key 的情况下构造可解密的会话属性；部署仍须限制 Redis 网络与 ACL。
 
-access token 临近到期三十秒时由框架刷新；返回 ID token 重新验证并更新会话，subject/epoch 必须与原主体一致。新的 access/refresh 只保存在服务端。刷新失败或结果未知时销毁本地会话，要求重新登录，不继续重试旧 refresh token。
+access token 临近到期三十秒时由框架刷新；返回 ID token 重新验证并更新会话，subject/epoch/sid 必须与原主体一致。新的 access/refresh 只保存在服务端。刷新失败或结果未知时销毁本地会话，要求重新登录，不继续重试旧 refresh token。
 
 并发保护分两层：
 
@@ -27,9 +27,9 @@ access token 临近到期三十秒时由框架刷新；返回 ID token 重新验
 
 ## CSRF、页面与退出
 
-静态首页使用外置 JS，CSP 限制 self、禁止嵌入及任意 base；不读取或持久化 token，数据通过 textContent 展示。所有写请求要求配置 origin 精确匹配与有效 CSRF token，没有 CORS 放开规则。`GET /csrf` 返回当前 RP 会话的 header 名/token；不能拿 IAM 的 CSRF token 代替 RP token。
+静态首页使用外置 JS，CSP 限制 self、禁止嵌入及任意 base；不读取或持久化 token，数据通过 textContent 展示。浏览器写请求要求配置 origin 精确匹配与有效 CSRF token，没有 CORS 放开规则。`GET /csrf` 返回当前 RP 会话的 header 名/token；不能拿 IAM 的 CSRF token 代替 RP token。后端 `/logout/backchannel` 使用签名 JWT 认证，不依赖浏览器 Cookie/Origin/CSRF。
 
-`POST /logout` 经 Origin/CSRF 校验，清本地 Cookie 和会话，再由框架生成 IAM RP-initiated logout URL；携带标准 id_token_hint，post_logout_redirect_uri 固定为注册的应用首页。IAM 有认证会话时执行全局 epoch 失效，另一个 RP 下一次请求因 live 校验被拒绝。没有 IAM 认证会话时，IAM 按已验证 hint 撤销该授权族，不能把它称为全局退出。IAM 后端退出通知与 logout_token/jti 防重放接收器尚未实现。
+`POST /logout` 经 Origin/CSRF 校验，清本地 Cookie 和会话，再由框架生成 IAM RP-initiated logout URL；携带标准 id_token_hint，post_logout_redirect_uri 固定为注册的应用首页。IAM 有认证会话时执行全局 epoch 失效，另一个 RP 下一次请求因 live 校验被拒绝。没有 IAM 认证会话时，IAM 按已验证 hint 撤销该授权族，不能把它称为全局退出。V8 已增加持久后端退出通知：已登记 RP 校验 logout_token 签名、上下文与 jti，并按 sid 原子删除会话、留下吊销标记；后台重试及迁移边界见 [通知文档](21-OIDC后端退出通知.md)。
 
 当前页面仅提供登录、读取示例数据及退出。IAM MFA 页面、密码到期、自助重置、因素恢复、会话列表、Vue/TypeScript 门户与无障碍/兼容报告继续按 T7 实现；没有删减原任务范围。
 
@@ -37,7 +37,7 @@ access token 临近到期三十秒时由框架刷新；返回 ID token 重新验
 
 应用接口另见 [RP/BFF OpenAPI](web-openapi.json)，不与 IAM 的业务路径混用。
 
-先通过 IAM 的 ClientAdminCli 注册 CONFIDENTIAL 客户端，scope 为 `openid, profile, api.read`，精确注册回调与退出地址。client_id 使用 3–60 位字母、数字、下划线或连字符；客户端 secret 随机 32–64 个可打印 ASCII 字符。每个实例提供下列受保护配置：
+先通过 IAM 的 ClientAdminCli 注册 CONFIDENTIAL 客户端，scope 为 `openid, profile, api.read`，精确注册回调、退出地址和同源 `/logout/backchannel`。client_id 使用 3–60 位字母、数字、下划线或连字符；客户端 secret 随机 32–64 个可打印 ASCII 字符。每个实例提供下列受保护配置：
 
 配置模板：[CRM](../examples/web-crm-client.json)、[HR](../examples/web-hrm-client.json)。替换为真实 HTTPS origin 后，通过 [客户端注册命令](13-第二阶段OIDC运行与验证.md) 逐个注册；`UNIPASS_CLIENT_SECRET` 与对应 RP 的 `UNIPASS_RP_CLIENT_SECRET` 必须一致，不能把生产 secret 加进 JSON。Introspection 的 Basic 客户端凭证按 [RFC 6749 §2.3.1](https://www.rfc-editor.org/rfc/rfc6749#section-2.3.1) 做 form 编码，回归使用含 `+%:` 的随机 secret 检验互通。
 
@@ -64,7 +64,7 @@ access token 临近到期三十秒时由框架刷新；返回 ID token 重新验
 
 覆盖：一次密码登录的两个 RP SSO；PKCE/nonce/state；回调伪造、跨应用和重放；ID token 与错误应用凭证拒绝；会话密文无原 token；实时状态故障拒绝；并发刷新仅一次；已提交刷新丢响应后不重放；恢复旧会话快照后的刷新拒绝；真实 LDAPS 改密后两个 RP/API 拒绝；Origin/CSRF 与 RP 退出。另有加密 envelope 篡改/跨应用/错误 key 和配置约束单测。
 
-测试使用 Java HTTP cookie jar，各应用在 localhost 不同端口，没有模拟真实站点的浏览器 SameSite 行为。真实 HTTPS 跨主机浏览器、MFA 接入页、OIDC back-channel logout、多实例、故障切换与生产目录仍待验收。改密到两个 RP/API 拒绝的本地观察保存在 `iam-web/target/independent-rp/revocation-observations.md`；少量串行样本不是 P99、峰值或五秒 SLA 报告。
+测试使用 Java HTTP cookie jar，各应用在 localhost 不同端口，没有模拟真实站点的浏览器 SameSite 行为。真实 HTTPS 跨主机浏览器、MFA 接入页、多实例、故障切换与生产目录仍待验收。back-channel 的独立进程与事务故障验证见 [通知记录](21-OIDC后端退出通知.md)。改密到两个 RP/API 拒绝的本地观察保存在 `iam-web/target/independent-rp/revocation-observations.md`；少量串行样本不是 P99、峰值或五秒 SLA 报告。
 
 参考：[Spring OAuth2 Client](https://docs.spring.io/spring-security/reference/6.5/servlet/oauth2/client/core.html)、[JWT 配合 introspection](https://docs.spring.io/spring-security/reference/6.5/servlet/oauth2/resource-server/opaque-token.html)。
 

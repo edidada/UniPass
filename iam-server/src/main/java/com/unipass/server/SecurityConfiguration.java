@@ -96,7 +96,7 @@ public class SecurityConfiguration {
         NativeRefreshSupport nativeClients = new NativeRefreshSupport(clients, clock);
         var logoutSuccess = new org.springframework.security.oauth2.server.authorization.oidc.web.authentication.OidcLogoutAuthenticationSuccessHandler();
         http.securityMatcher(server.getEndpointsMatcher())
-                .with(server, as -> as.authorizationService(authorizations).oidc(oidc -> oidc.userInfoEndpoint(userinfo -> userinfo.errorResponseHandler((request,response,error) -> {
+                .with(server, as -> as.authorizationService(authorizations).oidc(oidc -> oidc.providerConfigurationEndpoint(config -> config.providerConfigurationCustomizer(metadata -> metadata.claim("backchannel_logout_supported",true).claim("backchannel_logout_session_supported",true))).userInfoEndpoint(userinfo -> userinfo.errorResponseHandler((request,response,error) -> {
                             response.setStatus(401); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"invalid_token\"}");
                         })).logoutEndpoint(logout -> logout.logoutResponseHandler((request,response,authentication) -> {
                             try { logoutService.oidc(authentication); }

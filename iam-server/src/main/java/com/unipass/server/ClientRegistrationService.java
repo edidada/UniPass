@@ -15,7 +15,9 @@ public final class ClientRegistrationService {
     public record Spec(@JsonProperty("client_id") String clientId, String name, Kind kind,
                        @JsonProperty("redirect_uris") List<String> redirects,
                        @JsonProperty("post_logout_redirect_uris") List<String> logoutRedirects,
-                       Set<String> scopes) { }
+                       Set<String> scopes, @JsonProperty("backchannel_logout_uri") String backchannel) {
+        public Spec(String clientId,String name,Kind kind,List<String> redirects,List<String> logoutRedirects,Set<String> scopes){this(clientId,name,kind,redirects,logoutRedirects,scopes,null);}
+    }
     private final RegisteredClientRepository clients;
     private final boolean localHttp;
     public ClientRegistrationService(RegisteredClientRepository clients, boolean localHttp) { this.clients=clients; this.localHttp=localHttp; }
@@ -26,9 +28,13 @@ public final class ClientRegistrationService {
                 || !Set.of("openid","profile","email","api.read").containsAll(spec.scopes())) throw new IllegalArgumentException("Invalid client specification");
         if (clients.findByClientId(spec.clientId())!=null) throw new IllegalStateException("Client already registered");
         spec.redirects().forEach(value->validateRedirect(value,spec.kind())); spec.logoutRedirects().forEach(value->validateRedirect(value,spec.kind()));
+        if(spec.backchannel()!=null){
+            validateBackchannel(spec.backchannel(),spec.redirects(),spec.kind());
+        }
         var builder=RegisteredClient.withId(UUID.randomUUID().toString()).clientId(spec.clientId()).clientName(spec.name())
                 .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-                .clientSettings(ClientSettings.builder().requireProofKey(true).requireAuthorizationConsent(false).setting("unipass.native",spec.kind()==Kind.NATIVE).build())
+                .clientSettings(ClientSettings.builder().requireProofKey(true).requireAuthorizationConsent(false).setting("unipass.native",spec.kind()==Kind.NATIVE)
+                        .setting("unipass.backchannel_logout_uri",spec.backchannel()==null?"":spec.backchannel()).build())
                 .tokenSettings(TokenSettings.builder().authorizationCodeTimeToLive(Duration.ofSeconds(60)).accessTokenTimeToLive(Duration.ofHours(1))
                         .refreshTokenTimeToLive(Duration.ofDays(30)).reuseRefreshTokens(false).build());
         spec.redirects().forEach(builder::redirectUri); spec.logoutRedirects().forEach(builder::postLogoutRedirectUri); spec.scopes().forEach(builder::scope);
@@ -47,5 +53,11 @@ public final class ClientRegistrationService {
         boolean loopback=localHttp && "http".equals(uri.getScheme()) && uri.getHost()!=null && Set.of("127.0.0.1","localhost","[::1]").contains(uri.getHost());
         boolean nativeScheme=kind==Kind.NATIVE && uri.getScheme()!=null && uri.getScheme().matches("[a-z][a-z0-9-]*(\\.[a-z0-9-]+)+") && uri.getPath()!=null && !uri.getPath().isBlank();
         if (uri.getUserInfo()!=null || uri.getFragment()!=null || !(https||loopback||nativeScheme)) throw new IllegalArgumentException("Invalid callback URI");
+    }
+    private void validateBackchannel(String value,List<String> callbacks,Kind kind){
+        validateRedirect(value,kind);URI uri=URI.create(value);
+        if(kind!=Kind.CONFIDENTIAL || uri.getRawQuery()!=null || !"/logout/backchannel".equals(uri.getRawPath())
+                || callbacks.stream().map(URI::create).noneMatch(callback->Objects.equals(callback.getScheme(),uri.getScheme()) && Objects.equals(callback.getRawAuthority(),uri.getRawAuthority())))
+            throw new IllegalArgumentException("Back-channel must use a registered confidential callback origin and the fixed logout path");
     }
 }

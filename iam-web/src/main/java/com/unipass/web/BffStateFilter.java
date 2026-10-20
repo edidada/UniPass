@@ -16,11 +16,13 @@ final class BffStateFilter extends OncePerRequestFilter {
     static final String CLIENT=BffStateFilter.class.getName()+".client";
     private static final String STARTED=BffStateFilter.class.getName()+".started";
     private final OAuth2AuthorizedClientManager manager;private final LiveAccessDecoder decoder;
-    BffStateFilter(OAuth2AuthorizedClientManager manager,LiveAccessDecoder decoder){this.manager=manager;this.decoder=decoder;}
+    private final BackchannelSessions sessions;
+    BffStateFilter(OAuth2AuthorizedClientManager manager,LiveAccessDecoder decoder,BackchannelSessions sessions){this.manager=manager;this.decoder=decoder;this.sessions=sessions;}
     @Override protected boolean shouldNotFilter(HttpServletRequest request){return !request.getServletPath().startsWith("/bff/");}
     @Override protected void doFilterInternal(HttpServletRequest request,HttpServletResponse response,FilterChain chain)throws IOException,ServletException{
         var authentication=SecurityContextHolder.getContext().getAuthentication();
         if(authentication instanceof OAuth2AuthenticationToken login && login.getPrincipal() instanceof OidcUser user){
+            try{if(!sessions.active(user)){reject(request,response);return;}}catch(RuntimeException unavailable){response.setStatus(503);return;}
             var session=request.getSession();Instant start=(Instant)session.getAttribute(STARTED);
             if(start==null){start=user.getIdToken().getIssuedAt();session.setAttribute(STARTED,start);}
             if(start==null || !start.plusSeconds(86400).isAfter(Instant.now())){reject(request,response);return;}

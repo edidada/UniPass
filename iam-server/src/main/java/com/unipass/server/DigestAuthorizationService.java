@@ -22,8 +22,9 @@ public final class DigestAuthorizationService implements OAuth2AuthorizationServ
     private final JdbcTemplate jdbc;
     private final AccountState accounts;
     private final TransactionTemplate tx;
+    private final RegisteredClientRepository clients;
     public DigestAuthorizationService(JdbcTemplate jdbc, RegisteredClientRepository clients, AccountState accounts, TransactionTemplate tx) {
-        this.jdbc = jdbc; this.accounts = accounts; this.tx = tx;
+        this.jdbc = jdbc; this.accounts = accounts; this.tx = tx;this.clients=clients;
         delegate = new JdbcOAuth2AuthorizationService(jdbc, clients);
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModules(SecurityJackson2Modules.getModules(getClass().getClassLoader()));
@@ -52,6 +53,14 @@ public final class DigestAuthorizationService implements OAuth2AuthorizationServ
                 if (token != null) hashed.token(copy(token.getToken(), storedDigest(token.getToken().getTokenValue())), meta -> meta.putAll(token.getMetadata()));
             }
             delegate.save(hashed.build());
+            if(authorization.getToken(OidcIdToken.class)!=null){
+                var client=clients.findById(authorization.getRegisteredClientId());
+                String target=client==null?null:client.getClientSettings().getSetting("unipass.backchannel_logout_uri");
+                String sid=authorization.getToken(OidcIdToken.class).getToken().getClaimAsString("sid");
+                if(target!=null && !target.isBlank() && sid!=null && !sid.isBlank())
+                    jdbc.update("INSERT INTO oidc_rp_session(authorization_id,user_id,client_id,target_uri,sid,login_authenticated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(authorization_id) DO NOTHING",
+                            authorization.getId(),principal.getUserId(),client.getClientId(),target,sid,Timestamp.from(principal.getAuthenticatedAt()));
+            }
             for (Class<? extends OAuth2Token> type : tokenClasses()) {
                 var token = authorization.getToken(type);
                 if (token == null) continue;
