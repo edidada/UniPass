@@ -69,3 +69,5 @@ access token 临近到期三十秒时由框架刷新；返回 ID token 重新验
 参考：[Spring OAuth2 Client](https://docs.spring.io/spring-security/reference/6.5/servlet/oauth2/client/core.html)、[JWT 配合 introspection](https://docs.spring.io/spring-security/reference/6.5/servlet/oauth2/resource-server/opaque-token.html)。
 
 2026-10-20 22:05:56（Asia/Shanghai），JDK 17.0.12 / Maven 3.9.11 的全工程验证成功，约 145 秒，五个模块共 **102 项**，失败/错误/跳过均为 0。其中新模块 2 项单测、8 项独立进程集成测试；本次使用含 `+%:` 的客户端 secret。证据来自各模块 target 报告和实际可执行包，未以此声明真实浏览器或生产 SLA 通过。
+
+2026-10-20 22:07:44（Asia/Shanghai），Gradle Wrapper 8.14.3 / JDK 17 的五模块 `build` 成功，**102 项**报告失败/错误/跳过均为 0。首次 `clean build` 在新模块测试编译时发现缺少 `spring-jdbc`，补为 testImplementation 后重跑成功；未变更模块复用同一轮干净构建的通过结果。离线复用本机依赖缓存，未借用 Maven 产物。IAM 80 项、RP 67 项运行库清单与 Maven 全部一致。
