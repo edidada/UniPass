@@ -23,7 +23,7 @@ public final class PasswordReauthentication {
         try {
             if(password==null || password.length==0 || password.length>1024)
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Password required");
-            if(!accounts.allowed(principal.getUserId(),principal.getEpoch()))
+            if(!accounts.allowed(principal))
                 throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,"Session unavailable");
             var rows=jdbc.queryForList("SELECT employee_no,directory_id,directory_type FROM iam_user WHERE id=?",principal.getUserId());
             if(rows.size()!=1 || !directory.type().name().equals(rows.get(0).get("directory_type")))
@@ -36,10 +36,10 @@ public final class PasswordReauthentication {
             }
             limiter.succeeded(employee,ip);
             return tx.execute(ignored->{
-                accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+                accounts.lockAndRequire(principal);
                 accounts.audit(principal.getUserId(),"PASSWORD_REAUTH_SUCCESS");
                 return new IdentityPrincipal(principal.getUserId(),principal.getEpoch(),principal.getAuthenticatedAt(),
-                        accounts.roles(principal.getUserId()),principal.getMfaAt(),principal.getAuthenticationMethod(),clock.instant());
+                        accounts.roles(principal.getUserId()),principal.getMfaAt(),principal.getAuthenticationMethod(),clock.instant(),principal.getLoginId());
             });
         } catch(LockedException limited) {
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Authentication rate limited");

@@ -47,7 +47,7 @@ public final class MfaService {
     public Enrollment enroll(IdentityPrincipal principal) {
         if(!principal.hasRecentPassword(clock.instant()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Recent password authentication required");
         return tx.execute(status->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            accounts.lockAndRequire(principal);
             if(recoveryRequired(principal.getUserId()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Controlled factor recovery required");
             if(enrolled(principal.getUserId()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Factor already enrolled");
             byte[] secret=new byte[20];new SecureRandom().nextBytes(secret);
@@ -62,7 +62,7 @@ public final class MfaService {
     }
     public void confirmEnrollment(IdentityPrincipal principal,String code) {
         boolean valid=Boolean.TRUE.equals(tx.execute(status->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            accounts.lockAndRequire(principal);
             var factor=factor(principal.getUserId());Instant now=clock.instant();
             if(recoveryRequired(principal.getUserId()) || factor==null || factor.enabled || factor.pendingExpires==null || !factor.pendingExpires.isAfter(now)
                     || !principal.hasRecentPassword(now))return false;
@@ -76,7 +76,7 @@ public final class MfaService {
     }
     public UUID challenge(IdentityPrincipal principal,String sessionId,UUID context) {
         return tx.execute(status->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            accounts.lockAndRequire(principal);
             if(!enrolled(principal.getUserId()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Factor enrollment required");
             // A new challenge supersedes outstanding challenges for this session and user.
             String session=DigestAuthorizationService.digest(sessionId);
@@ -88,7 +88,7 @@ public final class MfaService {
     }
     public Instant verifyChallenge(IdentityPrincipal principal,String sessionId,UUID context,UUID challenge,String code) {
         boolean valid=Boolean.TRUE.equals(tx.execute(status->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            accounts.lockAndRequire(principal);
             Factor factor=factor(principal.getUserId());if(factor==null || !factor.enabled)return false;
             var rows=jdbc.query("SELECT expires_at,consumed_at FROM mfa_challenge WHERE id=? AND user_id=? AND auth_epoch=? AND session_digest=? AND context_id=? FOR UPDATE",
                     (r,n)->r.getTimestamp("consumed_at")==null && r.getTimestamp("expires_at").toInstant().isAfter(clock.instant()),challenge,principal.getUserId(),principal.getEpoch(),DigestAuthorizationService.digest(sessionId),context);

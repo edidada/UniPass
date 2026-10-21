@@ -16,7 +16,8 @@ class AuthenticationProofTest {
         assertNull(strong.getPasswordAuthenticatedAt());
     }
     @Test void passwordStepUpPreservesOriginalLoginAndFactorEvidence(){
-        var principal=external().withMfa(NOW).withPassword(NOW.plusSeconds(60));
+        var initial=external();var principal=initial.withMfa(NOW).withPassword(NOW.plusSeconds(60));
+        assertEquals(initial.getLoginId(),principal.getLoginId());
         assertEquals(NOW,principal.getAuthenticatedAt());assertEquals(NOW,principal.getMfaAt());
         assertEquals(user,principal.getUserId());assertEquals(5,principal.getEpoch());
         assertEquals(List.of("feishu","pwd","otp"),principal.getAuthenticationMethods());
@@ -30,11 +31,13 @@ class AuthenticationProofTest {
     }
     @Test void newAndLegacyServerWrittenJsonRetainTheirAuthenticationMeaning()throws Exception{
         var mapper=new ObjectMapper().findAndRegisterModules();
-        var restored=mapper.readValue(mapper.writeValueAsBytes(external().withMfa(NOW)),IdentityPrincipal.class);
+        var initial=external().withMfa(NOW);var restored=mapper.readValue(mapper.writeValueAsBytes(initial),IdentityPrincipal.class);
+        assertEquals(initial.getLoginId(),restored.getLoginId());
         assertEquals(List.of("feishu","otp"),restored.getAuthenticationMethods());assertNull(restored.getPasswordAuthenticatedAt());
         var node=mapper.valueToTree(new IdentityPrincipal(user,5,NOW,List.of("ROLE_USER")));
-        ((com.fasterxml.jackson.databind.node.ObjectNode)node).remove(List.of("authenticationMethod","passwordAuthenticatedAt"));
+        ((com.fasterxml.jackson.databind.node.ObjectNode)node).remove(List.of("authenticationMethod","passwordAuthenticatedAt","loginId"));
         var legacy=mapper.treeToValue(node,IdentityPrincipal.class);assertEquals(List.of("pwd"),legacy.getAuthenticationMethods());
+        assertNull(legacy.getLoginId());
         assertTrue(legacy.hasRecentPassword(NOW));
     }
     @Test void jdkSessionSerializationPreservesExternalProofAndRestoresAbsentLegacyFields()throws Exception{
@@ -42,11 +45,21 @@ class AuthenticationProofTest {
         assertEquals(List.of("feishu","otp"),external.getAuthenticationMethods());assertNull(external.getPasswordAuthenticatedAt());
         var legacy=new IdentityPrincipal(user,5,NOW,List.of("ROLE_USER"));
         // Java serialization defaults fields absent from an older stream to null.
-        for(String name:List.of("authenticationMethod","passwordAuthenticatedAt")){
+        for(String name:List.of("authenticationMethod","passwordAuthenticatedAt","loginId")){
             var field=IdentityPrincipal.class.getDeclaredField(name);field.setAccessible(true);field.set(legacy,null);
         }
         var restored=roundTrip(legacy);assertEquals(List.of("pwd"),restored.getAuthenticationMethods());
+        assertNull(restored.getLoginId());
         assertEquals(NOW,restored.getPasswordAuthenticatedAt());assertFalse(restored.hasRecentPassword(NOW.plusSeconds(300)));
+    }
+    @Test void identicalIdentityAndAuthenticationTimeStillCreateIndependentLogins(){
+        assertNotEquals(external().getLoginId(),external().getLoginId());
+    }
+    @Test void deviceDescriptionCannotReflectHeadersOrExposeVersions(){
+        assertEquals("Edge / Windows",LoginSessions.device("Mozilla/5.0 (Windows NT 10.0) Chrome/150.0 Edg/150.0 private-data"));
+        assertEquals("Safari / iOS",LoginSessions.device("Mozilla/5.0 (iPhone) Safari/620.1"));
+        assertEquals("Unknown",LoginSessions.device("x".repeat(1025)));
+        assertEquals("Other browser / Unknown OS",LoginSessions.device("<script>private</script>"));
     }
     private static IdentityPrincipal roundTrip(IdentityPrincipal principal)throws Exception{
         var bytes=new java.io.ByteArrayOutputStream();

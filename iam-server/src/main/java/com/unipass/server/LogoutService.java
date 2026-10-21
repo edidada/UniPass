@@ -16,6 +16,7 @@ public final class LogoutService {
     public void browser(Authentication authentication) {
         if (authentication == null || !(authentication.getPrincipal() instanceof IdentityPrincipal principal)) return;
         tx.executeWithoutResult(status -> {
+            accounts.lockAndRequire(principal);
             jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?", principal.getUserId());
             jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE principal_name=?", principal.getUserId().toString());
             accounts.audit(principal.getUserId(), "GLOBAL_LOGOUT");

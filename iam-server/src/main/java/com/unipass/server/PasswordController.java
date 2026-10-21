@@ -32,7 +32,7 @@ public class PasswordController {
         try {
             mfa.requireStrong(principal);
             if(!principal.hasRecentPassword(clock.instant()))throw new PasswordFailure(PasswordFailure.Code.RECENT_AUTH_REQUIRED);
-            AuthenticatedActor actor = AuthenticatedActor.user(principal.getUserId(), principal.getEpoch(), principal.getPasswordAuthenticatedAt());
+            AuthenticatedActor actor = AuthenticatedActor.user(principal.getUserId(), principal.getEpoch(), principal.getPasswordAuthenticatedAt(),principal.getLoginId());
             PasswordOperation operation = passwords.change(actor, key, request.oldPassword, request.newPassword, request.confirmation);
             return ResponseEntity.status(operation.state() == PasswordOperation.State.UNKNOWN || operation.state() == PasswordOperation.State.PREPARED ? 202 : 200).body(operation);
         } finally {

@@ -11,7 +11,8 @@ import java.time.*;
 final class SessionEpochFilter extends OncePerRequestFilter {
     private final AccountState accounts;
     private final Clock clock;
-    SessionEpochFilter(AccountState accounts, Clock clock) { this.accounts = accounts; this.clock = clock; }
+    private final LoginSessions sessions;
+    SessionEpochFilter(AccountState accounts, Clock clock,LoginSessions sessions) { this.accounts = accounts; this.clock = clock;this.sessions=sessions; }
     @Override protected boolean shouldNotFilter(HttpServletRequest request) {
         // Recovery routes use their own browser-bound capability; never trust a stale principal here.
         return request.getServletPath().startsWith("/api/password/reset/") || request.getServletPath().equals("/api/public/csrf");
@@ -31,6 +32,10 @@ final class SessionEpochFilter extends OncePerRequestFilter {
             if (!allowed && !recoveryStatus) {
                 if (request.getSession(false) != null) request.getSession(false).invalidate();
                 SecurityContextHolder.clearContext(); response.setStatus(401); return;
+            }
+            if(allowed){
+                try {sessions.seen(principal,request.getHeader("User-Agent"));}
+                catch(RuntimeException e){response.setStatus(503);return;}
             }
         }
         chain.doFilter(request, response);

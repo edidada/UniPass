@@ -39,7 +39,7 @@ public final class MfaLifecycleService {
         if(key==null || !key.matches("[A-Za-z0-9_-]{16,128}") || reason==null || reason.isBlank() || reason.length()>500 || reason.codePoints().anyMatch(Character::isISOControl)
                 || evidence==null || !evidence.matches("[A-Za-z0-9:/_.-]{8,500}"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Reason, evidence and idempotency key required");
         return tx.execute(status->{
-            lockUsers(target,principal.getUserId());accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());recentPassword(principal);
+            lockUsers(target,principal.getUserId());accounts.lockAndRequire(principal);recentPassword(principal);
             if(!mfa.recent(principal) || !accounts.roles(principal.getUserId()).contains(AUTHORITY))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Recovery authority and recent MFA required");
             var previous=jdbc.query("SELECT * FROM mfa_recovery_grant WHERE actor_id=? AND user_id=? AND idempotency_key=?",(r,n)->grant(r),principal.getUserId(),target,key);
             if(!previous.isEmpty()){
@@ -61,7 +61,7 @@ public final class MfaLifecycleService {
     }
     public Replacement rotate(IdentityPrincipal principal,String session){
         return tx.execute(status->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());recentPassword(principal);
+            accounts.lockAndRequire(principal);recentPassword(principal);
             if(!mfa.recent(principal) || !mfa.enrolled(principal.getUserId()) || mfa.recoveryRequired(principal.getUserId()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Current factor verification required");
             return begin(principal,session,"ROTATE",null,clock.instant().plusSeconds(300));
         });
@@ -71,7 +71,7 @@ public final class MfaLifecycleService {
         var rows=jdbc.query("SELECT * FROM mfa_recovery_grant WHERE token_digest=? AND user_id=?",(r,n)->grant(r),DigestAuthorizationService.digest(token),principal.getUserId());
         if(rows.isEmpty())throw denied();Grant observed=rows.get(0);
         return tx.execute(status->{
-            lockUsers(principal.getUserId(),observed.actor);accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());recentPassword(principal);
+            lockUsers(principal.getUserId(),observed.actor);accounts.lockAndRequire(principal);recentPassword(principal);
             Grant current=jdbc.queryForObject("SELECT * FROM mfa_recovery_grant WHERE id=? FOR UPDATE",(r,n)->grant(r),observed.id);
             if(current==null || current.consumed || current.revoked || !current.expires.isAfter(clock.instant()) || current.epoch!=principal.getEpoch()
                     || !mfa.recoveryRequired(principal.getUserId()) || !liveIssuer(current))throw denied();
@@ -98,7 +98,7 @@ public final class MfaLifecycleService {
         Change observed=change(id,false);if(!observed.user.equals(principal.getUserId()))throw denied();
         Grant issuer=observed.grant==null?null:jdbc.queryForObject("SELECT * FROM mfa_recovery_grant WHERE id=?",(r,n)->grant(r),observed.grant);
         boolean valid=Boolean.TRUE.equals(tx.execute(status->{
-            lockUsers(principal.getUserId(),issuer==null?principal.getUserId():issuer.actor);accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());recentPassword(principal);
+            lockUsers(principal.getUserId(),issuer==null?principal.getUserId():issuer.actor);accounts.lockAndRequire(principal);recentPassword(principal);
             Change current=change(id,true);Instant now=clock.instant();
             if(!"PENDING".equals(current.state) || current.epoch!=principal.getEpoch() || !current.session.equals(DigestAuthorizationService.digest(session)) || !current.expires.isAfter(now))throw denied();
             if("ROTATE".equals(current.mode)){
@@ -118,7 +118,7 @@ public final class MfaLifecycleService {
     }
     public void cancel(IdentityPrincipal principal,String session,UUID id){
         tx.executeWithoutResult(status->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());Change current=change(id,true);
+            accounts.lockAndRequire(principal);Change current=change(id,true);
             if(!current.user.equals(principal.getUserId()) || current.epoch!=principal.getEpoch() || !current.session.equals(DigestAuthorizationService.digest(session)) || !"PENDING".equals(current.state))throw denied();
             jdbc.update("UPDATE mfa_factor_change SET state='CANCELLED',secret_cipher=NULL,finished_at=? WHERE id=?",Timestamp.from(clock.instant()),id);accounts.audit(current.user,"MFA_FACTOR_CHANGE_CANCELLED");
         });

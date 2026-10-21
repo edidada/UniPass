@@ -37,12 +37,26 @@ public class AccountState {
     }
     public boolean allowed(IdentityPrincipal principal){
         return allowed(principal.getUserId(),principal.getEpoch())
+                && loginAllowed(principal.getUserId(),principal.getEpoch(),principal.getLoginId())
                 && (principal.getAuthenticationMethod()!=IdentityPrincipal.Method.FEISHU || federatedAllowed(principal.getUserId(),principal.getEpoch()));
     }
     public void lockAndRequire(IdentityPrincipal principal){
         lockAndRequire(principal.getUserId(),principal.getEpoch());
+        if(!loginAllowed(principal.getUserId(),principal.getEpoch(),principal.getLoginId()))
+            throw new BadCredentialsException("Login unavailable");
         if(principal.getAuthenticationMethod()==IdentityPrincipal.Method.FEISHU && !federatedAllowed(principal.getUserId(),principal.getEpoch()))
             throw new BadCredentialsException("Federated binding unavailable");
+    }
+    public IdentityPrincipal registerLogin(IdentityPrincipal principal){
+        jdbc.update("INSERT INTO iam_login(id,user_id,auth_epoch,authenticated_at,last_access_at,authentication_method) VALUES (?,?,?,?,?,?)",
+                principal.getLoginId(),principal.getUserId(),principal.getEpoch(),java.sql.Timestamp.from(principal.getAuthenticatedAt()),
+                java.sql.Timestamp.from(principal.getAuthenticatedAt()),principal.getAuthenticationMethod().name());
+        return principal;
+    }
+    public boolean loginAllowed(UUID user,long epoch,UUID login){
+        return login!=null && Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM iam_login WHERE id=? AND user_id=? AND auth_epoch=? AND revoked_at IS NULL)
+                """,Boolean.class,login,user,epoch));
     }
     public boolean backchannelRequiresReauthentication(IdentityPrincipal principal,String client){
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM oidc_logout_task WHERE user_id=? AND client_id=? AND login_authenticated_at=?)",Boolean.class,
@@ -58,9 +72,13 @@ public class AccountState {
         roles.add("ROLE_USER"); return roles;
     }
     public void audit(UUID user, String action) {
-        jdbc.update("INSERT INTO auth_audit(id,user_id,action,trace_id) VALUES (?,?,?,?)", UUID.randomUUID(), user, action, UUID.randomUUID());
+        audit(user,action,null);
+    }
+    public void audit(UUID user,String action,UUID login) {
+        jdbc.update("INSERT INTO auth_audit(id,user_id,action,trace_id,login_id) VALUES (?,?,?,?,?)", UUID.randomUUID(), user, action, UUID.randomUUID(),login);
     }
     public boolean recoveryStatusAllowed(IdentityPrincipal principal, String operationId) {
+        if(!loginAllowed(principal.getUserId(),principal.getEpoch(),principal.getLoginId()))return false;
         var observed=security.current();
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM password_operation p JOIN iam_user u ON u.id=p.user_id WHERE p.id=?::uuid AND u.id=? AND u.status='ACTIVE' AND u.auth_epoch=p.fenced_epoch AND p.fenced_epoch=? AND EXISTS(SELECT 1 FROM auth_runtime_state WHERE singleton AND redis_generation=?::uuid AND redis_run_id=?))",
                 Boolean.class, operationId, principal.getUserId(), principal.getEpoch() + 1,observed.generation(),observed.runId()));

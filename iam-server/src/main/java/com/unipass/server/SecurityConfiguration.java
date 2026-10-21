@@ -61,7 +61,7 @@ public class SecurityConfiguration {
             context.getJwsHeader().keyId(env.getRequiredProperty("unipass.signing.alias"));
             context.getClaims().subject(principal.getUserId().toString()).claim("auth_epoch", principal.getEpoch())
                     .claim("unipass_family", context.getAuthorization().getId()).claim("amr", principal.getAuthenticationMethods())
-                    .claim("unipass_auth_method",principal.getAuthenticationMethod().name());
+                    .claim("unipass_auth_method",principal.getAuthenticationMethod().name()).claim("unipass_login",principal.getLoginId().toString());
             if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
                 context.getJwsHeader().type("at+jwt");
                 List<String> audiences = new ArrayList<>(List.of(context.getRegisteredClient().getClientId()));
@@ -85,6 +85,7 @@ public class SecurityConfiguration {
             try {
                 if (issuer.validate(jwt).hasErrors() || jwt.getClaim("auth_epoch") == null || jwt.getClaimAsString("unipass_family") == null
                         || !accounts.allowed(UUID.fromString(jwt.getSubject()), ((Number) jwt.getClaim("auth_epoch")).longValue())
+                        || !accounts.loginAllowed(UUID.fromString(jwt.getSubject()),((Number)jwt.getClaim("auth_epoch")).longValue(),UUID.fromString(jwt.getClaimAsString("unipass_login")))
                         || "FEISHU".equals(jwt.getClaimAsString("unipass_auth_method")) && !accounts.federatedAllowed(UUID.fromString(jwt.getSubject()),((Number)jwt.getClaim("auth_epoch")).longValue())
                         || !Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM oauth2_authorization WHERE id=? AND revoked=false AND principal_name=?)", Boolean.class, jwt.getClaimAsString("unipass_family"), jwt.getSubject())))
                     throw new IllegalArgumentException("Inactive credential");
@@ -93,7 +94,7 @@ public class SecurityConfiguration {
         };
     }
     @Bean @Order(1) SecurityFilterChain protocol(HttpSecurity http, DirectoryAuthenticationProvider provider, DigestAuthorizationService authorizations,
-            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa) throws Exception {
+            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa,LoginSessions sessions) throws Exception {
         var server = OAuth2AuthorizationServerConfigurer.authorizationServer();
         NativeRefreshSupport nativeClients = new NativeRefreshSupport(clients, clock);
         var logoutSuccess = new org.springframework.security.oauth2.server.authorization.oidc.web.authentication.OidcLogoutAuthenticationSuccessHandler();
@@ -109,7 +110,7 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login")))
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()));
-        http.addFilterAfter(new SessionEpochFilter(accounts, clock), SecurityContextHolderFilter.class);
+        http.addFilterAfter(new SessionEpochFilter(accounts, clock,sessions), SecurityContextHolderFilter.class);
         http.addFilterAfter(new AuthorizationRequestGuard(clients, accounts, mfa), SessionEpochFilter.class);
         http.addFilterAfter(new TokenTransactionFilter(tx), AuthorizationRequestGuard.class);
         return http.build();
@@ -125,12 +126,12 @@ public class SecurityConfiguration {
                 .csrf(csrf -> csrf.disable()).oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(api)));
         return http.build();
     }
-    @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http, DirectoryAuthenticationProvider provider, AccountState accounts, Clock clock, LogoutService logoutService) throws Exception {
+    @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http, DirectoryAuthenticationProvider provider, AccountState accounts, Clock clock, LogoutService logoutService,LoginSessions sessions) throws Exception {
         http.authenticationProvider(provider).authorizeHttpRequests(auth -> auth.requestMatchers("/login", "/error", "/api/public/csrf", "/api/password/reset/**",
                         "/api/connector/feishu/login/start","/api/connector/feishu/callback").permitAll().anyRequest().authenticated())
                 .formLogin(Customizer.withDefaults()).logout(logout -> logout.addLogoutHandler((request,response,authentication) -> logoutService.browser(authentication)));
         http.headers(headers -> headers.referrerPolicy(policy -> policy.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER)));
-        http.addFilterAfter(new SessionEpochFilter(accounts, clock), SecurityContextHolderFilter.class);
+        http.addFilterAfter(new SessionEpochFilter(accounts, clock,sessions), SecurityContextHolderFilter.class);
         return http.build();
     }
 }
