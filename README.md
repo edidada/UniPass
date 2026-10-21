@@ -8,6 +8,8 @@
 pwsh -NoProfile -File scripts/verify-stage1.ps1
 ```
 
+飞书后端已加入固定应用/租户 OAuth v3 + S256、显式绑定、改密后续绑及有期能力管理，默认关闭；配置、测试替身与真实租户验收边界见 [飞书接入](docs/25-飞书登录与显式绑定.md)。
+
 需要 JDK 17、Maven 3.9+。该命令运行 LDAPS 与真实 PostgreSQL 17.6 测试并打包，不依赖 Docker。
 
 OIDC 全量回归另需本机 Redis：`pwsh -NoProfile -File scripts/verify-all.ps1 -RedisExecutable 'redis-server 完整路径'`。构建与运行基线为 JDK 17；Maven 为主，Gradle 方案在 `build/gradle-jdk17` 分支，见 [构建与 CI](docs/17-构建与持续集成.md)。
