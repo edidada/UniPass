@@ -42,6 +42,7 @@ class OidcFlowIT {
     @Autowired JdbcTemplate jdbc;
     @Autowired RegisteredClientRepository clients;
     @Autowired FakeDirectory directory;
+    @Autowired PasswordReauthentication reauthentication;
     @Autowired DigestAuthorizationService authorizations;
     @Autowired MfaService mfa;
     @Autowired MfaKeyService factorKeys;
@@ -99,7 +100,7 @@ class OidcFlowIT {
     @BeforeEach void seed() {
         factorKeys.activate("legacy","test:fixture","test:reset");
         jdbc.execute("TRUNCATE oauth2_authorization CASCADE"); jdbc.execute("TRUNCATE import_source CASCADE");
-        user=UUID.randomUUID(); directory.password=OLD;mail.reset();
+        user=UUID.randomUUID(); directory.password=OLD;directory.afterVerify=()->{};mail.reset();
         var resetKeys=redisTemplate.keys("unipass:reset:*");if(resetKeys!=null && !resetKeys.isEmpty())redisTemplate.delete(resetKeys);
         jdbc.update("INSERT INTO import_source(source_id,cursor_value) VALUES ('hr','1')");
         jdbc.update("INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version) VALUES (?,'E001',?,'OPENLDAP','uid=one,dc=example','Test','ACTIVE','hr',1)",user,user);
@@ -698,6 +699,35 @@ class OidcFlowIT {
         assertEquals(200,api(tokens(browser(),"web").get("access_token").asText()).statusCode());
     }
     static boolean windows(){return System.getProperty("os.name").startsWith("Windows");}
+    @Test void passwordReauthenticationRequiresCsrfAndRotatesAnAuthenticatedSession()throws Exception{
+        HttpClient browser=browser();login(browser);
+        var cookies=((CookieManager)browser.cookieHandler().orElseThrow()).getCookieStore();
+        String before=cookies.getCookies().stream().filter(cookie->cookie.getName().equals("UNIPASS_SSO")).findFirst().orElseThrow().getValue();
+        assertEquals(403,browser.send(HttpRequest.newBuilder(uri("/api/session/reauthenticate")).header("Content-Type","application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"password\":\"unused\"}")).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(401,postJson(browser,"/api/session/reauthenticate",Map.of("password","wrong-password")).statusCode());
+        assertEquals(200,postJson(browser,"/api/session/reauthenticate",Map.of("password",OLD)).statusCode());
+        String after=cookies.getCookies().stream().filter(cookie->cookie.getName().equals("UNIPASS_SSO")).findFirst().orElseThrow().getValue();
+        assertNotEquals(before,after);assertEquals(200,get(browser,"/api/session/me").statusCode());
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='PASSWORD_REAUTH_SUCCESS'",Integer.class));
+    }
+    @Test void federatedOtpCannotReplacePasswordProofAndReauthenticationKeepsLoginLifetime(){
+        var login=Instant.now().minusSeconds(600);
+        var external=new IdentityPrincipal(user,0,login,List.of("ROLE_USER"),Instant.now(),IdentityPrincipal.Method.FEISHU,null);
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.enroll(external));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.rotate(external,"external-session"));
+        char[] input=OLD.toCharArray();var upgraded=reauthentication.verify(external,input,"test:external");
+        assertArrayEquals(new char[input.length],input);assertEquals(login,upgraded.getAuthenticatedAt());
+        assertTrue(upgraded.hasRecentPassword(Instant.now()));assertEquals(List.of("feishu","pwd","otp"),upgraded.getAuthenticationMethods());
+        assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+    }
+    @Test void passwordReauthenticationRejectsEpochChangeDuringDirectoryVerification(){
+        var principal=principal();char[] input=OLD.toCharArray();
+        directory.afterVerify=()->jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",user);
+        var failure=assertThrows(org.springframework.web.server.ResponseStatusException.class,()->reauthentication.verify(principal,input,"test:race"));
+        assertEquals(401,failure.getStatusCode().value());assertArrayEquals(new char[input.length],input);
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='PASSWORD_REAUTH_SUCCESS'",Integer.class));
+    }
     static String enc(String value){return URLEncoder.encode(value,StandardCharsets.UTF_8);}
     @TestConfiguration static class TestDirectory {
         @Bean FakeDirectory fakeDirectory(){return new FakeDirectory();}
@@ -711,9 +741,10 @@ class OidcFlowIT {
     }
     static class FakeDirectory implements DirectoryGateway {
         volatile String password;
+        volatile Runnable afterVerify=()->{};
         @Override public DirectoryConfig.Type type(){return DirectoryConfig.Type.OPENLDAP;}
         @Override public Optional<DirectoryUser> findByStableId(String id){return Optional.of(new DirectoryUser(id,"E001","uid=one,dc=example",false));}
-        @Override public boolean verifyCredential(String id,char[] value){return password.equals(new String(value));}
+        @Override public boolean verifyCredential(String id,char[] value){boolean matches=password.equals(new String(value));afterVerify.run();return matches;}
         @Override public void changePassword(String id,char[] old,char[] next){if(!verifyCredential(id,old))throw new DirectoryFailure(DirectoryFailure.Kind.REJECTED);password=new String(next);}
         @Override public void disableUser(String id){}
         @Override public boolean supportsPasswordReset(){return true;}

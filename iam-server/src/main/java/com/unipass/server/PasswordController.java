@@ -13,7 +13,8 @@ import java.util.*;
 public class PasswordController {
     private final PasswordChangeService passwords;
     private final MfaService mfa;
-    public PasswordController(PasswordChangeService passwords, MfaService mfa) { this.passwords = passwords; this.mfa=mfa; }
+    private final java.time.Clock clock;
+    public PasswordController(PasswordChangeService passwords, MfaService mfa,java.time.Clock clock) { this.passwords = passwords; this.mfa=mfa;this.clock=clock; }
     public static final class PasswordRequest {
         @com.fasterxml.jackson.annotation.JsonProperty("old_password") @Size(min=1, max=1024) public char[] oldPassword;
         @com.fasterxml.jackson.annotation.JsonProperty("new_password") @Size(min=1, max=1024) public char[] newPassword;
@@ -30,7 +31,8 @@ public class PasswordController {
             @RequestHeader("Idempotency-Key") String key, @Valid @RequestBody PasswordRequest request) {
         try {
             mfa.requireStrong(principal);
-            AuthenticatedActor actor = AuthenticatedActor.user(principal.getUserId(), principal.getEpoch(), principal.getAuthenticatedAt());
+            if(!principal.hasRecentPassword(clock.instant()))throw new PasswordFailure(PasswordFailure.Code.RECENT_AUTH_REQUIRED);
+            AuthenticatedActor actor = AuthenticatedActor.user(principal.getUserId(), principal.getEpoch(), principal.getPasswordAuthenticatedAt());
             PasswordOperation operation = passwords.change(actor, key, request.oldPassword, request.newPassword, request.confirmation);
             return ResponseEntity.status(operation.state() == PasswordOperation.State.UNKNOWN || operation.state() == PasswordOperation.State.PREPARED ? 202 : 200).body(operation);
         } finally {

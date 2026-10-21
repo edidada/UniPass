@@ -45,7 +45,7 @@ public final class MfaService {
         if(required(principal) && !recent(principal)) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"MFA required");
     }
     public Enrollment enroll(IdentityPrincipal principal) {
-        if(!principal.getAuthenticatedAt().plusSeconds(300).isAfter(clock.instant()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Recent authentication required");
+        if(!principal.hasRecentPassword(clock.instant()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Recent password authentication required");
         return tx.execute(status->{
             accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
             if(recoveryRequired(principal.getUserId()))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Controlled factor recovery required");
@@ -65,7 +65,7 @@ public final class MfaService {
             accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
             var factor=factor(principal.getUserId());Instant now=clock.instant();
             if(recoveryRequired(principal.getUserId()) || factor==null || factor.enabled || factor.pendingExpires==null || !factor.pendingExpires.isAfter(now)
-                    || !principal.getAuthenticatedAt().plusSeconds(300).isAfter(now))return false;
+                    || !principal.hasRecentPassword(now))return false;
             long step=verify(principal.getUserId(),factor,code);
             if(step<0)return false;
             jdbc.update("UPDATE mfa_totp SET enabled=true,pending_expires_at=NULL,last_used_step=?,failed_attempts=0,locked_until=NULL WHERE user_id=?",step,principal.getUserId());

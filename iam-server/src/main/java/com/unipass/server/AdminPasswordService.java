@@ -18,8 +18,8 @@ public final class AdminPasswordService {
         this.jdbc=jdbc;this.tx=tx;this.accounts=accounts;this.mfa=mfa;this.passwords=passwords;this.clock=clock;
     }
     private AuthenticatedActor actor(IdentityPrincipal principal,String authority){
-        if(!accounts.roles(principal.getUserId()).contains("ROLE_ADMIN_"+authority) || !mfa.recent(principal))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Administrative authority and recent MFA required");
-        return new AuthenticatedActor(principal.getUserId(),principal.getEpoch(),principal.getAuthenticatedAt(),Set.of(authority),principal.getMfaAt());
+        if(!principal.hasRecentPassword(clock.instant()) || !accounts.roles(principal.getUserId()).contains("ROLE_ADMIN_"+authority) || !mfa.recent(principal))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Administrative authority and recent password/MFA required");
+        return new AuthenticatedActor(principal.getUserId(),principal.getEpoch(),principal.getPasswordAuthenticatedAt(),Set.of(authority),principal.getMfaAt());
     }
     public PasswordOperation reset(IdentityPrincipal principal,UUID target,String key,String reason,char[] password,char[] confirmation){
         try {
@@ -34,7 +34,7 @@ public final class AdminPasswordService {
         PasswordOperation result=passwords.recover(admin,operation,committed,evidence);complete(intent,result.id());return result;
     }
     public PasswordOperation status(IdentityPrincipal principal,UUID operation){
-        if(!mfa.recent(principal) || accounts.roles(principal.getUserId()).stream().noneMatch(role->Set.of("ROLE_ADMIN_PASSWORD_RESET","ROLE_ADMIN_PASSWORD_RECOVERY").contains(role)))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Administrative authority required");
+        if(!principal.hasRecentPassword(clock.instant()) || !mfa.recent(principal) || accounts.roles(principal.getUserId()).stream().noneMatch(role->Set.of("ROLE_ADMIN_PASSWORD_RESET","ROLE_ADMIN_PASSWORD_RECOVERY").contains(role)))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Administrative authority required");
         return passwords.get(operation,target(operation));
     }
     private UUID target(UUID operation){

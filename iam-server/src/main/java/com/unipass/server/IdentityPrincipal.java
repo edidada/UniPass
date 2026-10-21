@@ -17,18 +17,44 @@ public final class IdentityPrincipal implements UserDetails, Serializable {
     private final Instant authenticatedAt;
     private final List<String> roles;
     private final Instant mfaAt;
+    public enum Method { PASSWORD, FEISHU }
+    private final Method authenticationMethod;
+    private final Instant passwordAuthenticatedAt;
     public IdentityPrincipal(UUID userId,long epoch,Instant authenticatedAt,List<String> roles) { this(userId,epoch,authenticatedAt,roles,null); }
+    public IdentityPrincipal(UUID userId,long epoch,Instant authenticatedAt,List<String> roles,Instant mfaAt) {
+        this(userId,epoch,authenticatedAt,roles,mfaAt,Method.PASSWORD,authenticatedAt);
+    }
     @JsonCreator public IdentityPrincipal(@JsonProperty("userId") UUID userId, @JsonProperty("epoch") long epoch,
-            @JsonProperty("authenticatedAt") Instant authenticatedAt, @JsonProperty("roles") List<String> roles, @JsonProperty("mfaAt") Instant mfaAt) {
+            @JsonProperty("authenticatedAt") Instant authenticatedAt, @JsonProperty("roles") List<String> roles, @JsonProperty("mfaAt") Instant mfaAt,
+            @JsonProperty("authenticationMethod") Method authenticationMethod, @JsonProperty("passwordAuthenticatedAt") Instant passwordAuthenticatedAt) {
         this.userId = userId; this.epoch = epoch; this.authenticatedAt = authenticatedAt; this.roles = new ArrayList<>(roles);
         this.mfaAt=mfaAt;
+        // Old server-written sessions represented directory/password authentication only.
+        this.authenticationMethod=authenticationMethod==null?Method.PASSWORD:authenticationMethod;
+        this.passwordAuthenticatedAt=authenticationMethod==null?authenticatedAt:passwordAuthenticatedAt;
+        Objects.requireNonNull(userId);Objects.requireNonNull(authenticatedAt);
+        if(this.authenticationMethod==Method.PASSWORD && this.passwordAuthenticatedAt==null)
+            throw new IllegalArgumentException("Password proof required");
     }
     public UUID getUserId() { return userId; }
     public long getEpoch() { return epoch; }
     public Instant getAuthenticatedAt() { return authenticatedAt; }
     public List<String> getRoles() { return new ArrayList<>(roles); }
     public Instant getMfaAt() { return mfaAt; }
-    public IdentityPrincipal withMfa(Instant at) { return new IdentityPrincipal(userId,epoch,authenticatedAt,roles,at); }
+    public Method getAuthenticationMethod() { return authenticationMethod; }
+    public Instant getPasswordAuthenticatedAt() { return passwordAuthenticatedAt; }
+    public IdentityPrincipal withMfa(Instant at) { return new IdentityPrincipal(userId,epoch,authenticatedAt,roles,at,authenticationMethod,passwordAuthenticatedAt); }
+    public IdentityPrincipal withPassword(Instant at) { return new IdentityPrincipal(userId,epoch,authenticatedAt,roles,mfaAt,authenticationMethod,Objects.requireNonNull(at)); }
+    public boolean hasRecentPassword(Instant now) {
+        return passwordAuthenticatedAt!=null && !passwordAuthenticatedAt.isAfter(now) && passwordAuthenticatedAt.plusSeconds(300).isAfter(now);
+    }
+    @JsonIgnore public List<String> getAuthenticationMethods() {
+        List<String> methods=new ArrayList<>();
+        if(authenticationMethod==Method.FEISHU)methods.add("feishu");
+        if(passwordAuthenticatedAt!=null)methods.add("pwd");
+        if(mfaAt!=null)methods.add("otp");
+        return methods;
+    }
     @Override @JsonIgnore public String getUsername() { return userId.toString(); }
     @Override @JsonIgnore public String getPassword() { return ""; }
     @Override @JsonIgnore public Collection<? extends GrantedAuthority> getAuthorities() {
