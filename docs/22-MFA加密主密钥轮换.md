@@ -15,7 +15,7 @@ V2 为 `version=2 | 1字节key-id长度 | ASCII key-id | 12字节nonce | ciphert
 
 示意结构为 `{"totp-2026q4":"<由secret管理注入的Base64值>"}`，占位内容不可直接运行。不要把生产 JSON 放入 Git、命令行参数、工单或日志。各节点安装同一可读 key 集合；数据库只保存 id、SHA-256 材料指纹、状态和操作证据引用，未保存密钥材料。
 
-V9 新增 `mfa_encryption_key`、单行 `mfa_encryption_control`、`mfa_key_audit`。首次控制行未初始化时，在事务内登记配置 key：有 legacy 则继续写 V1；没有 legacy 时只允许唯一一个命名 key 作为初始写入 key。已有因素引用的 key 必须可用。后续启动不自动引入配置里的新 key，且会检查所有 AVAILABLE key 的材料指纹及现有引用；缺失、材料漂移或引用已退役 key 会拒绝启动。
+V9 新增 `mfa_encryption_key`、单行 `mfa_encryption_control`、`mfa_key_audit`。首次控制行未初始化时，在事务内登记配置 key：有 legacy 则继续写 V1；没有 legacy 时只允许唯一一个命名 key 作为初始写入 key。已有因素引用的 key 必须可用，并在提交初始指纹之前验证全部已有密文的 owner/AAD/tag；错误材料或坏密文使登记、writer 与审计一起回滚，不会固化错误指纹。后续启动不自动引入配置里的新 key，且会检查所有 AVAILABLE key 的材料指纹及现有引用；缺失、材料漂移或引用已退役 key 会拒绝启动。
 
 ## 写入与并发约束
 
@@ -60,6 +60,10 @@ java '-Dloader.main=com.unipass.server.MfaKeyAdminCli' -cp iam-server/target/iam
 
 ## 验证范围
 
-`MfaSecretCipherTest` 覆盖 V1 兼容、V2 owner/key-id AAD、tag 篡改、未知 key 和格式/配置拒绝。`MfaKeyRotationIT` 在真实 PG 中先建 V8 并写入活动与 pending，再升级 V9，覆盖状态和计数保留、旧节点写入拒绝、旧材料退役/缺失/漂移、坏密文批次回滚、跳锁后续跑、双 worker、切换等待在途写入、提交时故障回滚，以及实际可执行 JAR 的完整 CLI 流程且不输出 key。OIDC HTTP 增量覆盖切换期间现有授权继续有效、旧 pending 按新 writer 提交、新因素可验证；因素确认仍撤销旧授权。
+`MfaSecretCipherTest` 覆盖 V1 兼容、V2 owner/key-id AAD、tag 篡改、未知 key 和格式/配置拒绝。`MfaKeyRotationIT` 在真实 PG 中先建 V8 并写入活动与 pending，再升级 V9，覆盖首次错误材料不固化指纹、状态和计数保留、旧节点写入拒绝、旧材料退役/缺失/漂移、坏密文批次回滚、跳锁后续跑、双 worker、切换等待在途写入、提交时故障回滚，以及实际可执行 JAR 的完整 CLI 流程且不输出 key。OIDC HTTP 增量覆盖切换期间现有授权继续有效、旧 pending 按新 writer 提交、新因素可验证；因素确认仍撤销旧授权。
 
-统一验证命令沿用 `scripts/verify-all.ps1 -RedisExecutable <Redis路径>`，Gradle 分支运行等价集成测试。最终双构建结果在完成后补充，不能以此前 OIDC 或单元测试结果替代。P2–P5 的其余实现与外部验收继续保留。
+统一验证命令沿用 `scripts/verify-all.ps1 -RedisExecutable <Redis路径>`，Gradle 分支运行等价集成测试。P2–P5 的其余实现与外部验收继续保留。
+
+2026-10-21 07:55:07（Asia/Shanghai），JDK 17.0.12 / Maven 3.9.11 最终源码全量脚本成功，约 227 秒，五模块 **122 项**测试，失败/错误/跳过均为 0。MFA envelope 单测由 1 增为 3，新 PG 密钥轮换集成 8，OIDC HTTP 由 42 增为 43，独立 RP 15 项保持通过。功能提交 `6486859`，首次材料校验补强 `e5d1a4a`；本次执行包含实际服务 JAR 的密钥 CLI，不以补强之前的 121 项证明新增检查。
+
+2026-10-21 07:56:39（Asia/Shanghai），`build/gradle-jdk17` 合并至 `f84e2df` 后完成 Gradle Wrapper 8.14.3 / JDK 17 的 `clean build --offline`，约 244 秒，37 个任务全部执行，**122 项**测试失败/错误/跳过均为 0。五模块源码与 Maven 主线一致，IAM/RP 的运行库名称与版本分别为相同的 80/67 项。仓库未配置 remote，`gh run list --limit 1` 无法定位仓库，远程 Actions 未验证。
