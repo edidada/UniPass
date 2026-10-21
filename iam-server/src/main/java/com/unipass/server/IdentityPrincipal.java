@@ -5,6 +5,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import java.io.Serializable;
+import java.io.Serial;
 import java.time.Instant;
 import java.util.*;
 
@@ -40,6 +41,11 @@ public final class IdentityPrincipal implements UserDetails, Serializable {
     public long getEpoch() { return epoch; }
     public Instant getAuthenticatedAt() { return authenticatedAt; }
     public List<String> getRoles() { return new ArrayList<>(roles); }
+    // Spring Session currently uses JDK serialization. Absent fields in old streams
+    // become null without invoking the JSON creator, so restore the old proof here.
+    @Serial private Object readResolve() {
+        return authenticationMethod==null?new IdentityPrincipal(userId,epoch,authenticatedAt,roles,mfaAt):this;
+    }
     public Instant getMfaAt() { return mfaAt; }
     public Method getAuthenticationMethod() { return authenticationMethod; }
     public Instant getPasswordAuthenticatedAt() { return passwordAuthenticatedAt; }

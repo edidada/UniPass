@@ -37,4 +37,20 @@ class AuthenticationProofTest {
         var legacy=mapper.treeToValue(node,IdentityPrincipal.class);assertEquals(List.of("pwd"),legacy.getAuthenticationMethods());
         assertTrue(legacy.hasRecentPassword(NOW));
     }
+    @Test void jdkSessionSerializationPreservesExternalProofAndRestoresAbsentLegacyFields()throws Exception{
+        var external=roundTrip(external().withMfa(NOW));
+        assertEquals(List.of("feishu","otp"),external.getAuthenticationMethods());assertNull(external.getPasswordAuthenticatedAt());
+        var legacy=new IdentityPrincipal(user,5,NOW,List.of("ROLE_USER"));
+        // Java serialization defaults fields absent from an older stream to null.
+        for(String name:List.of("authenticationMethod","passwordAuthenticatedAt")){
+            var field=IdentityPrincipal.class.getDeclaredField(name);field.setAccessible(true);field.set(legacy,null);
+        }
+        var restored=roundTrip(legacy);assertEquals(List.of("pwd"),restored.getAuthenticationMethods());
+        assertEquals(NOW,restored.getPasswordAuthenticatedAt());assertFalse(restored.hasRecentPassword(NOW.plusSeconds(300)));
+    }
+    private static IdentityPrincipal roundTrip(IdentityPrincipal principal)throws Exception{
+        var bytes=new java.io.ByteArrayOutputStream();
+        try(var output=new java.io.ObjectOutputStream(bytes)){output.writeObject(principal);}
+        try(var input=new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray()))){return (IdentityPrincipal)input.readObject();}
+    }
 }
