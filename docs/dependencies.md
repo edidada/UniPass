@@ -27,7 +27,7 @@
 | Spring Security | 6.5.11 | 认证、过滤器与 JWT |
 | Spring Session core/data-redis | 3.5.7 | Redis 会话 |
 | UnboundID LDAP SDK | 7.0.4 | 领域网关在服务中的运行版本 |
-| Flyway core/database-postgresql | 11.7.2 | V1–V9 服务迁移 |
+| Flyway core/database-postgresql | 11.7.2 | V1–V10 服务迁移 |
 | PostgreSQL JDBC | 42.7.11 | PG 连接 |
 | Jackson databind/core | 2.21.4 | JSON 及框架授权持久化 |
 | Tomcat embedded | 10.1.55 | HTTP 容器 |
