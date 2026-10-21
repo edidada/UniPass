@@ -37,6 +37,8 @@ class MfaKeyRotationIT {
         var old=new MfaSecretCipher(key(0));
         jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled,last_used_step,failed_attempts,locked_until) VALUES (?,?,true,123,3,now()+interval '10 minutes')",USER,old.encrypt(USER,secret));
         jdbc.update("INSERT INTO mfa_factor_change(id,user_id,auth_epoch,session_digest,secret_cipher,mode,state,expires_at,created_at) VALUES (?,?,5,'session-digest',?,'ROTATE','PENDING',now()+interval '5 minutes',now())",change,USER,old.encrypt(USER,pending));
+        Flyway.configure().dataSource(jdbc.getDataSource()).target("9").load().migrate();
+        assertEquals(5L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,USER));
         Flyway.configure().dataSource(jdbc.getDataSource()).load().migrate();legacy=service(true,Map.of());keys=service(true,Map.of("next",key(1)));
     }
     private byte[] factor(UUID user){return jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user);}
@@ -51,6 +53,7 @@ class MfaKeyRotationIT {
         assertEquals(2,service(true,Map.of()).verify());assertArrayEquals(secret,service(true,Map.of()).decrypt(USER,factor(USER)));
     }
     @Test void stagedUpgradeRekeysActiveAndPendingWithoutChangingSecurityState()throws Exception{
+        long epochBefore=jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,USER);
         var before=jdbc.queryForMap("SELECT enabled,last_used_step,failed_attempts,locked_until,pending_expires_at,created_at FROM mfa_totp WHERE user_id=?",USER);
         var pendingBefore=jdbc.queryForMap("SELECT state,auth_epoch,session_digest,expires_at,created_at FROM mfa_factor_change WHERE id=?",change);
         assertEquals("legacy",keys.status().active());assertEquals(2,keys.verify());activate();
@@ -60,7 +63,7 @@ class MfaKeyRotationIT {
         assertEquals(2,keys.rekey(1,ACTOR,EVIDENCE));assertEquals(0,keys.rekey(1,ACTOR,EVIDENCE));
         assertEquals(before,jdbc.queryForMap("SELECT enabled,last_used_step,failed_attempts,locked_until,pending_expires_at,created_at FROM mfa_totp WHERE user_id=?",USER));
         assertEquals(pendingBefore,jdbc.queryForMap("SELECT state,auth_epoch,session_digest,expires_at,created_at FROM mfa_factor_change WHERE id=?",change));
-        assertEquals(5,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Integer.class,USER));assertArrayEquals(secret,keys.decrypt(USER,factor(USER)));
+        assertEquals(epochBefore,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,USER));assertArrayEquals(secret,keys.decrypt(USER,factor(USER)));
         assertArrayEquals(pending,keys.decrypt(USER,jdbc.queryForObject("SELECT secret_cipher FROM mfa_factor_change WHERE id=?",byte[].class,change)));
         assertEquals(2,keys.verify());assertTrue(keys.retire("legacy",ACTOR,EVIDENCE));assertFalse(keys.retire("legacy",ACTOR,EVIDENCE));
         assertThrows(IllegalStateException.class,()->keys.decrypt(USER,stale));assertArrayEquals(secret,service(false,Map.of("next",key(1))).decrypt(USER,factor(USER)));
