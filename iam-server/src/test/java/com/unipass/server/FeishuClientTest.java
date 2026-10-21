@@ -46,7 +46,7 @@ class FeishuClientTest {
     }
     @Test void responseBodyHasSizeAndTotalTimeBounds()throws Exception{
         remote.tokenBody="x".repeat(65537);assertThrows(FeishuClient.Failure.class,()->remote.client().exchange("code","s"));
-        remote.reset();var release=new CountDownLatch(1);remote.afterToken=()->{try{release.await(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}};
+        remote.reset();var release=new CountDownLatch(1);remote.afterHeaders=()->{try{release.await(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}};
         try{assertTimeoutPreemptively(Duration.ofSeconds(3),()->assertEquals(503,assertThrows(FeishuClient.Failure.class,()->remote.client(Duration.ofMillis(300)).exchange("code","s")).status()));}
         finally{release.countDown();}
         assertEquals(1,remote.calls.get());

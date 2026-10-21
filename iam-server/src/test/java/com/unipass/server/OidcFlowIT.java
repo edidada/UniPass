@@ -748,10 +748,13 @@ class OidcFlowIT {
     }
     private HttpClient feishuLogin()throws Exception{
         var browser=browser();String state=feishuStart(browser,false);
+        var anonymousCsrf=json.readTree(get(browser,"/api/public/csrf").body());
         var cookies=((CookieManager)browser.cookieHandler().orElseThrow()).getCookieStore();
         String before=cookies.getCookies().stream().filter(cookie->cookie.getName().equals("UNIPASS_SSO")).findFirst().orElseThrow().getValue();
         var response=get(browser,"/api/connector/feishu/callback?state="+state+"&code=login_"+UUID.randomUUID());assertEquals(200,response.statusCode(),response.body());
-        String after=cookies.getCookies().stream().filter(cookie->cookie.getName().equals("UNIPASS_SSO")).findFirst().orElseThrow().getValue();assertNotEquals(before,after);return browser;
+        String after=cookies.getCookies().stream().filter(cookie->cookie.getName().equals("UNIPASS_SSO")).findFirst().orElseThrow().getValue();assertNotEquals(before,after);
+        var oldProof=browser.send(HttpRequest.newBuilder(uri("/api/mfa/context")).header("Content-Type","application/json").header(anonymousCsrf.get("header_name").asText(),anonymousCsrf.get("token").asText()).POST(HttpRequest.BodyPublishers.ofString("{}")).build(),HttpResponse.BodyHandlers.ofString());
+        assertEquals(403,oldProof.statusCode(),oldProof.body());return browser;
     }
     private JsonNode feishuTokens(HttpClient browser)throws Exception{
         String verifier="f".repeat(64);var response=get(browser,authorize("web",verifier));assertEquals(302,response.statusCode(),response.body());
