@@ -18,7 +18,7 @@ final class FeishuFixture implements AutoCloseable {
     volatile String authorization;
     volatile String tokenBody,userBody,mime;
     volatile int tokenStatus;
-    volatile Runnable afterToken;
+    volatile Runnable afterToken,afterHeaders;
     FeishuFixture()throws Exception{
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);server.setExecutor(threads);
         server.createContext("/token",exchange->{
@@ -28,7 +28,7 @@ final class FeishuFixture implements AutoCloseable {
         server.createContext("/user",exchange->{authorization=exchange.getRequestHeaders().getFirst("Authorization");reply(exchange,200,userBody);});
         reset();server.start();
     }
-    void reset(){calls.set(0);form=Map.of();authorization=null;mime="application/json";tokenStatus=200;afterToken=()->{};
+    void reset(){calls.set(0);form=Map.of();authorization=null;mime="application/json";tokenStatus=200;afterToken=()->{};afterHeaders=()->{};
         tokenBody="{\"code\":0,\"access_token\":\"fixture-user-token\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
         userBody="{\"code\":0,\"data\":{\"tenant_key\":\""+TENANT+"\",\"open_id\":\"ou_fixture\"}}";
     }
@@ -39,7 +39,7 @@ final class FeishuFixture implements AutoCloseable {
     }
     private void reply(HttpExchange exchange,int status,String body)throws java.io.IOException{
         byte[] bytes=body.getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type",mime);
-        exchange.sendResponseHeaders(status,bytes.length);try(var out=exchange.getResponseBody()){out.write(bytes);}finally{exchange.close();}
+        exchange.sendResponseHeaders(status,bytes.length);afterHeaders.run();try(var out=exchange.getResponseBody()){out.write(bytes);}finally{exchange.close();}
     }
     static Map<String,String> parameters(String query){
         var result=new HashMap<String,String>();for(String pair:query.split("&")){String[] parts=pair.split("=",2);result.put(URLDecoder.decode(parts[0],StandardCharsets.UTF_8),parts.length==2?URLDecoder.decode(parts[1],StandardCharsets.UTF_8):"");}return result;
