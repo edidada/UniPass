@@ -31,7 +31,7 @@ public final class LoginSessions {
                     AND (?::uuid IS NULL OR (authenticated_at,id)<(SELECT authenticated_at,id FROM iam_login WHERE id=?))
                     ORDER BY authenticated_at DESC,id DESC LIMIT 51
                     """,(r,n)->new Entry(r.getObject("id",UUID.class),r.getTimestamp("authenticated_at").toInstant(),
-                    r.getTimestamp("last_access_at").toInstant(),r.getString("authentication_method"),r.getString("device"),
+                    r.getTimestamp("last_access_at").toInstant(),r.getString("authentication_method"),Objects.requireNonNullElse(r.getString("device"),"Unknown"),
                     principal.getLoginId().equals(r.getObject("id",UUID.class))),principal.getUserId(),principal.getEpoch(),before,before);
             boolean more=rows.size()>50;var page=List.copyOf(rows.subList(0,Math.min(50,rows.size())));
             return new Page(page,more?page.get(page.size()-1).id():null);
@@ -54,8 +54,8 @@ public final class LoginSessions {
     }
     void seen(IdentityPrincipal principal,String userAgent){
         jdbc.update("""
-                UPDATE iam_login SET last_access_at=clock_timestamp(),device=CASE WHEN device='Unknown' THEN ? ELSE device END
-                WHERE id=? AND user_id=? AND revoked_at IS NULL AND (device='Unknown' OR last_access_at<clock_timestamp()-interval '1 minute')
+                UPDATE iam_login SET last_access_at=clock_timestamp(),device=COALESCE(device,?)
+                WHERE id=? AND user_id=? AND revoked_at IS NULL AND (device IS NULL OR last_access_at<clock_timestamp()-interval '1 minute')
                 """,device(userAgent),principal.getLoginId(),principal.getUserId());
     }
     static String device(String userAgent){
