@@ -25,7 +25,7 @@ final class SessionEpochFilter extends OncePerRequestFilter {
             // Only the operation-status route keeps a recent, bounded recovery session during its own fence.
             boolean recoveryStatus;
             try { recoveryStatus = !allowed && request.getMethod().equals("GET") && request.getServletPath().matches("/api/password/operations/[a-fA-F0-9-]{36}")
-                    && principal.getAuthenticatedAt().plusSeconds(300).isAfter(clock.instant())
+                    && principal.hasRecentPassword(clock.instant())
                     && accounts.recoveryStatusAllowed(principal, request.getServletPath().substring(request.getServletPath().lastIndexOf('/') + 1)); }
             catch (RuntimeException e) { response.setStatus(503); return; }
             if (!allowed && !recoveryStatus) {

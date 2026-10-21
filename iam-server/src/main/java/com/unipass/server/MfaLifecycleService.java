@@ -25,7 +25,7 @@ public final class MfaLifecycleService {
     private static ResponseStatusException denied(){return new ResponseStatusException(HttpStatus.BAD_REQUEST,"Invalid or expired factor operation");}
     private void recentPassword(IdentityPrincipal principal){
         Instant now=clock.instant();
-        if(principal.getAuthenticatedAt().isAfter(now) || !principal.getAuthenticatedAt().plusSeconds(300).isAfter(now))
+        if(!principal.hasRecentPassword(now))
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Recent password authentication required");
     }
     private void lockUsers(UUID target,UUID actor){
