@@ -17,7 +17,9 @@ public final class LoginSessionController {
     private final String origin;
     public LoginSessionController(LoginSessions sessions,@Value("${unipass.issuer}") String issuer){
         this.sessions=sessions;URI uri=URI.create(issuer);
-        origin=uri.getScheme()+"://"+uri.getRawAuthority();
+        int port=uri.getPort();
+        origin=uri.getScheme()+"://"+uri.getHost().toLowerCase(java.util.Locale.ROOT)
+                +(port==-1 || port==443 && uri.getScheme().equals("https") || port==80 && uri.getScheme().equals("http")?"":":"+port);
     }
     @GetMapping LoginSessions.Page list(@AuthenticationPrincipal IdentityPrincipal principal,@RequestParam(required=false) UUID before){
         return sessions.list(principal,before);

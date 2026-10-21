@@ -3,7 +3,7 @@ CREATE TABLE iam_login (
  auth_epoch bigint NOT NULL, authenticated_at timestamptz NOT NULL,
  last_access_at timestamptz NOT NULL DEFAULT now(),
  authentication_method varchar(16) NOT NULL CHECK(authentication_method IN ('PASSWORD','FEISHU')),
- device varchar(80) NOT NULL DEFAULT 'Unknown', revoked_at timestamptz
+ device varchar(80), revoked_at timestamptz
 );
 CREATE INDEX iam_login_owner ON iam_login(user_id,authenticated_at DESC);
 CREATE TABLE iam_login_grant (

@@ -731,6 +731,19 @@ class OidcFlowIT {
         assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM password_operation",Integer.class));
         assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
     }
+    @Test void unknownDeviceIsSampledOnceAndActivityCannotExtendOriginalLoginTime(){
+        var actor=principal();UUID login=actor.getLoginId();
+        loginSessions.seen(actor,"x".repeat(1025));
+        var recorded=jdbc.queryForMap("SELECT device,last_access_at,authenticated_at FROM iam_login WHERE id=?",login);
+        assertEquals("Unknown",recorded.get("device"));
+        loginSessions.seen(actor,"Mozilla/5.0 (Windows NT 10.0) Chrome/150.0 private-data");
+        assertEquals(recorded,jdbc.queryForMap("SELECT device,last_access_at,authenticated_at FROM iam_login WHERE id=?",login));
+        jdbc.update("UPDATE iam_login SET last_access_at=now()-interval '2 minutes' WHERE id=?",login);
+        loginSessions.seen(actor,null);
+        var updated=jdbc.queryForMap("SELECT device,last_access_at,authenticated_at FROM iam_login WHERE id=?",login);
+        assertEquals(recorded.get("device"),updated.get("device"));assertEquals(recorded.get("authenticated_at"),updated.get("authenticated_at"));
+        assertTrue(((java.sql.Timestamp)updated.get("last_access_at")).after((java.sql.Timestamp)recorded.get("last_access_at")));
+    }
     @Test void individualRevocationEnqueuesBackchannelForThatLoginOnly()throws Exception{
         var client=clients.findByClientId("web");clients.save(RegisteredClient.from(client).clientSettings(ClientSettings.withSettings(client.getClientSettings().getSettings())
                 .setting("unipass.backchannel_logout_uri","https://rp.example.test/backchannel").build()).build());
