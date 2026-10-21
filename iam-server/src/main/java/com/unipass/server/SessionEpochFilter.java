@@ -20,7 +20,7 @@ final class SessionEpochFilter extends OncePerRequestFilter {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication != null && authentication.getPrincipal() instanceof IdentityPrincipal principal) {
             boolean allowed;
-            try { allowed = principal.getAuthenticatedAt().plus(Duration.ofDays(1)).isAfter(clock.instant()) && accounts.allowed(principal.getUserId(), principal.getEpoch()); }
+            try { allowed = principal.getAuthenticatedAt().plus(Duration.ofDays(1)).isAfter(clock.instant()) && accounts.allowed(principal); }
             catch (RuntimeException e) { response.setStatus(503); return; }
             // Only the operation-status route keeps a recent, bounded recovery session during its own fence.
             boolean recoveryStatus;

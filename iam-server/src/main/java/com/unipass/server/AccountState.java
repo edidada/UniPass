@@ -7,6 +7,8 @@ import java.util.*;
 
 @Service
 public class AccountState {
+    @org.springframework.beans.factory.annotation.Value("${unipass.feishu.enabled:false}")
+    private boolean feishuEnabled;
     private final JdbcTemplate jdbc;
     private final RedisSecurityState security;
     public AccountState(JdbcTemplate jdbc,RedisSecurityState security) { this.jdbc = jdbc; this.security=security; }
@@ -24,6 +26,23 @@ public class AccountState {
     }
     public boolean mustChange(UUID id) {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT must_change_password FROM iam_user WHERE id=?", Boolean.class, id));
+    }
+    public boolean federatedAllowed(UUID id,long epoch){
+        if(!feishuEnabled)return false;
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM feishu_binding b,feishu_connector c,feishu_capability p
+                WHERE c.singleton AND c.enabled AND b.tenant_key=c.tenant_key AND b.user_id=? AND b.bound_epoch=?
+                AND p.capability='LOGIN' AND p.state='VERIFIED' AND p.verified_at<=clock_timestamp() AND p.valid_until>clock_timestamp())
+                """,Boolean.class,id,epoch));
+    }
+    public boolean allowed(IdentityPrincipal principal){
+        return allowed(principal.getUserId(),principal.getEpoch())
+                && (principal.getAuthenticationMethod()!=IdentityPrincipal.Method.FEISHU || federatedAllowed(principal.getUserId(),principal.getEpoch()));
+    }
+    public void lockAndRequire(IdentityPrincipal principal){
+        lockAndRequire(principal.getUserId(),principal.getEpoch());
+        if(principal.getAuthenticationMethod()==IdentityPrincipal.Method.FEISHU && !federatedAllowed(principal.getUserId(),principal.getEpoch()))
+            throw new BadCredentialsException("Federated binding unavailable");
     }
     public boolean backchannelRequiresReauthentication(IdentityPrincipal principal,String client){
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM oidc_logout_task WHERE user_id=? AND client_id=? AND login_authenticated_at=?)",Boolean.class,

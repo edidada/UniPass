@@ -43,6 +43,8 @@ server:
         same-site: lax
         path: /
 unipass:
+  feishu:
+    enabled: ${UNIPASS_FEISHU_ENABLED:false}
   security:
     generation-key: ${UNIPASS_REDIS_GENERATION_KEY:unipass:security:generation}
   recovery:

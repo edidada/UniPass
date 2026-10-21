@@ -53,6 +53,7 @@ class OidcFlowIT {
     @Autowired org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
     @Autowired org.springframework.transaction.support.TransactionTemplate transactions;
     @Autowired RedisSecurityState securityState;
+    @Autowired FeishuFixture feishuRemote;
     @Autowired com.unipass.password.PasswordChangeService passwords;
     private final ObjectMapper json = new ObjectMapper();
     private UUID user;
@@ -95,11 +96,19 @@ class OidcFlowIT {
         props.add("unipass.mfa.key", () -> Base64.getEncoder().encodeToString(new byte[32]));
         props.add("unipass.mfa.keys-json", () -> "{\"next\":\""+nextFactorKey()+"\"}");
         props.add("unipass.jobs.enabled", () -> false);
+        props.add("unipass.feishu.enabled", () -> true);
+        props.add("UNIPASS_FEISHU_APP_ID", () -> FeishuFixture.APP);
+        props.add("UNIPASS_FEISHU_TENANT_KEY", () -> FeishuFixture.TENANT);
+        props.add("UNIPASS_FEISHU_APP_SECRET", () -> FeishuFixture.SECRET);
+        props.add("UNIPASS_FEISHU_CALLBACK", () -> "https://localhost:9999/api/connector/feishu/callback");
         props.add("unipass.password.reset-history-verified", () -> true);
     }
     @BeforeEach void seed() {
         factorKeys.activate("legacy","test:fixture","test:reset");
         jdbc.execute("TRUNCATE oauth2_authorization CASCADE"); jdbc.execute("TRUNCATE import_source CASCADE");
+        jdbc.execute("TRUNCATE feishu_flow,feishu_code_use");feishuRemote.reset();
+        var feishuAdmin=new FeishuAdmin(jdbc,transactions);feishuAdmin.configure(FeishuFixture.APP,FeishuFixture.TENANT,"operator:fixture","ticket:fixture");
+        feishuAdmin.recordLoginVerification("operator:fixture","ticket:fixture-not-real-tenant");
         user=UUID.randomUUID(); directory.password=OLD;directory.afterVerify=()->{};mail.reset();
         var resetKeys=redisTemplate.keys("unipass:reset:*");if(resetKeys!=null && !resetKeys.isEmpty())redisTemplate.delete(resetKeys);
         jdbc.update("INSERT INTO import_source(source_id,cursor_value) VALUES ('hr','1')");
@@ -729,9 +738,77 @@ class OidcFlowIT {
         assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='PASSWORD_REAUTH_SUCCESS'",Integer.class));
     }
     static String enc(String value){return URLEncoder.encode(value,StandardCharsets.UTF_8);}
+    private String feishuStart(HttpClient browser,boolean binding)throws Exception{
+        var response=recoveryJson(browser,"/api/connector/feishu/"+(binding?"binding":"login")+"/start",Map.of(),null);
+        assertEquals(200,response.statusCode(),response.body());return FeishuFixture.parameters(URI.create(json.readTree(response.body()).get("authorizationUrl").asText()).getRawQuery()).get("state");
+    }
+    private void feishuBind()throws Exception{
+        var owner=browser();login(owner);String state=feishuStart(owner,true);
+        var bound=get(owner,"/api/connector/feishu/callback?state="+state+"&code=bind_"+UUID.randomUUID());assertEquals(200,bound.statusCode(),bound.body());assertTrue(json.readTree(bound.body()).get("bound").asBoolean());
+    }
+    private HttpClient feishuLogin()throws Exception{
+        var browser=browser();String state=feishuStart(browser,false);
+        var cookies=((CookieManager)browser.cookieHandler().orElseThrow()).getCookieStore();
+        String before=cookies.getCookies().stream().filter(cookie->cookie.getName().equals("UNIPASS_SSO")).findFirst().orElseThrow().getValue();
+        var response=get(browser,"/api/connector/feishu/callback?state="+state+"&code=login_"+UUID.randomUUID());assertEquals(200,response.statusCode(),response.body());
+        String after=cookies.getCookies().stream().filter(cookie->cookie.getName().equals("UNIPASS_SSO")).findFirst().orElseThrow().getValue();assertNotEquals(before,after);return browser;
+    }
+    private JsonNode feishuTokens(HttpClient browser)throws Exception{
+        String verifier="f".repeat(64);var response=get(browser,authorize("web",verifier));assertEquals(302,response.statusCode(),response.body());
+        URI callback=URI.create(response.headers().firstValue("Location").orElseThrow());assertTrue(callback.toString().startsWith(CALLBACK),callback.toString());
+        var exchanged=exchange("web",FeishuFixture.parameters(callback.getRawQuery()).get("code"),verifier);assertEquals(200,exchanged.statusCode(),exchanged.body());return json.readTree(exchanged.body());
+    }
+    @Test void feishuBrowserLoginIssuesFederatedOidcTokensAndRequiresPasswordForSensitiveActions()throws Exception{
+        feishuBind();var browser=feishuLogin();assertEquals(200,get(browser,"/api/session/me").statusCode());
+        var tokens=feishuTokens(browser);var claims=json.readTree(Base64.getUrlDecoder().decode(tokens.get("id_token").asText().split("\\.")[1]));assertEquals(json.readTree("[\"feishu\"]"),claims.get("amr"));
+        assertEquals(200,api(tokens.get("access_token").asText()).statusCode());
+        assertEquals(403,postJson(browser,"/api/mfa/enrollment",Map.of()).statusCode());
+        assertEquals(403,postJson(browser,"/api/connector/feishu/binding/start",Map.of()).statusCode());
+        assertEquals(200,postJson(browser,"/api/session/reauthenticate",Map.of("password",OLD)).statusCode());
+        assertEquals(200,postJson(browser,"/api/connector/feishu/binding/start",Map.of()).statusCode());
+        assertEquals(200,postJson(browser,"/api/connector/feishu/binding/remove",Map.of()).statusCode());
+        assertEquals(401,api(tokens.get("access_token").asText()).statusCode());assertEquals(401,get(browser,"/api/session/me").statusCode());
+    }
+    @Test void feishuPermissionExpiryAndDisableInvalidateBrowserJwtIntrospectionAndRefresh()throws Exception{
+        feishuBind();var browser=feishuLogin();var tokens=feishuTokens(browser);String access=tokens.get("access_token").asText();
+        assertTrue(json.readTree(post(browser(),"/oauth/introspect",Map.of("token",access),"web").body()).get("active").asBoolean());
+        // Expiry without an UPDATE must also deny live credentials; no epoch trigger is needed.
+        jdbc.execute("ALTER TABLE feishu_capability DISABLE TRIGGER feishu_capability_fence");
+        try{jdbc.execute("UPDATE feishu_capability SET verified_at=now()-interval '8 days',valid_until=now()-interval '1 day' WHERE capability='LOGIN'");}
+        finally{jdbc.execute("ALTER TABLE feishu_capability ENABLE TRIGGER feishu_capability_fence");}
+        assertEquals(401,api(access).statusCode());assertEquals(401,get(browser,"/api/session/me").statusCode());
+        assertFalse(json.readTree(post(browser(),"/oauth/introspect",Map.of("token",access),"web").body()).get("active").asBoolean());assertEquals(400,refresh("web",tokens.get("refresh_token").asText()).statusCode());
+        new FeishuAdmin(jdbc,transactions).recordLoginVerification("operator:fixture","ticket:reverification");
+        assertEquals(401,api(access).statusCode());assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM feishu_binding b JOIN iam_user u ON u.id=b.user_id AND b.bound_epoch=u.auth_epoch",Integer.class));
+        feishuBind();var renewed=feishuLogin();var current=feishuTokens(renewed);new FeishuAdmin(jdbc,transactions).disable("operator:fixture","ticket:disabled");
+        assertEquals(401,api(current.get("access_token").asText()).statusCode());assertEquals(401,get(renewed,"/api/session/me").statusCode());
+    }
+    @Test void feishuCallbackRejectsCrossBrowserDuplicateQueryAndReplayAndStartNeedsCsrf()throws Exception{
+        var owner=browser();assertEquals(403,owner.send(HttpRequest.newBuilder(uri("/api/connector/feishu/login/start")).POST(HttpRequest.BodyPublishers.noBody()).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        String state=feishuStart(owner,false);var stranger=browser();get(stranger,"/api/public/csrf");String path="/api/connector/feishu/callback?state="+state+"&code=unbound_code";
+        assertEquals(401,get(stranger,path).statusCode());assertEquals(401,get(owner,path+"&state="+state).statusCode());assertEquals(0,feishuRemote.calls.get());
+        assertEquals(401,get(owner,path).statusCode());assertEquals(401,get(owner,path).statusCode());assertEquals(1,feishuRemote.calls.get());
+    }
+    @Test void feishuLoginRetainsExistingMfaChallengeRequirement()throws Exception{
+        feishuBind();byte[] secret=seedFactor(user);var passwordBrowser=browser();login(passwordBrowser);
+        assertEquals(403,postJson(passwordBrowser,"/api/connector/feishu/binding/start",Map.of()).statusCode());
+        var browser=feishuLogin();var required=get(browser,authorize("web","v".repeat(64)));assertEquals(401,required.statusCode(),required.body());
+        assertEquals(403,postJson(browser,"/api/connector/feishu/binding/start",Map.of()).statusCode());
+        stepUp(browser,secret,Instant.now());var tokens=feishuTokens(browser);var claims=json.readTree(Base64.getUrlDecoder().decode(tokens.get("id_token").asText().split("\\.")[1]));assertEquals(json.readTree("[\"feishu\",\"otp\"]"),claims.get("amr"));
+        assertEquals(403,postJson(browser,"/api/mfa/rotation",Map.of()).statusCode());
+    }
+    @Test void directoryPasswordChangeRequiresExplicitRenewalBeforeFeishuCanLoginAgain()throws Exception{
+        feishuBind();var external=feishuLogin();var old=feishuTokens(external);var owner=browser();login(owner);
+        var changed=recoveryJson(owner,"/api/password/change",Map.of("old_password",OLD,"new_password",NEW,"confirm_password",NEW),UUID.randomUUID().toString());assertEquals(200,changed.statusCode(),changed.body());
+        assertEquals(401,api(old.get("access_token").asText()).statusCode());assertEquals(401,get(external,"/api/session/me").statusCode());
+        var denied=browser();String state=feishuStart(denied,false);assertEquals(401,get(denied,"/api/connector/feishu/callback?state="+state+"&code=stale_binding").statusCode());
+        feishuBind();assertEquals(200,get(feishuLogin(),"/api/session/me").statusCode());
+    }
     @TestConfiguration static class TestDirectory {
         @Bean FakeDirectory fakeDirectory(){return new FakeDirectory();}
         @Bean @org.springframework.context.annotation.Primary TestMail testMail(){return new TestMail();}
+        @Bean FeishuFixture feishuFixture()throws Exception{return new FeishuFixture();}
+        @Bean @org.springframework.context.annotation.Primary FeishuService testFeishuService(JdbcTemplate jdbc,org.springframework.transaction.support.TransactionTemplate tx,AccountState accounts,MfaService mfa,Clock clock,FeishuFixture fixture){return new FeishuService(jdbc,tx,accounts,mfa,clock,fixture.client());}
     }
     static class TestMail implements RecoveryEmailSender {
         final List<String> links=new ArrayList<>(),recipients=new ArrayList<>();boolean fail;Runnable beforeSend=()->{};

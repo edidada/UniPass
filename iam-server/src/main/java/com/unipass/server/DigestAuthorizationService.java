@@ -42,7 +42,7 @@ public final class DigestAuthorizationService implements OAuth2AuthorizationServ
     @Override public void save(OAuth2Authorization authorization) {
         tx.executeWithoutResult(status -> {
             IdentityPrincipal principal = principal(authorization);
-            try { accounts.lockAndRequire(principal.getUserId(), principal.getEpoch()); }
+            try { accounts.lockAndRequire(principal); }
             catch (org.springframework.security.authentication.BadCredentialsException e) { throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT); }
             boolean revoked = Boolean.TRUE.equals(jdbc.query("SELECT revoked FROM oauth2_authorization WHERE id=? FOR UPDATE",
                     r -> r.next() && r.getBoolean(1), authorization.getId()));
@@ -93,11 +93,11 @@ public final class DigestAuthorizationService implements OAuth2AuthorizationServ
         if (authorization == null) return null;
         IdentityPrincipal principal = principal(authorization);
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
-            try { accounts.lockAndRequire(principal.getUserId(), principal.getEpoch()); }
+            try { accounts.lockAndRequire(principal); }
             catch (org.springframework.security.authentication.BadCredentialsException e) { return null; }
             jdbc.queryForList("SELECT id FROM oauth2_authorization WHERE id=? FOR UPDATE", String.class, id);
             authorization = delegate.findById(id);
-        } else if (!accounts.allowed(principal.getUserId(), principal.getEpoch())) return null;
+        } else if (!accounts.allowed(principal)) return null;
         if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id=?", Boolean.class, id))) return null;
         var clientAuth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         if (clientAuth instanceof org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientAuthenticationToken client
