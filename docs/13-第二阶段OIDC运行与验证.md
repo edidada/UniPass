@@ -40,7 +40,7 @@ Redis 保存 IAM 主机下的 HttpOnly/Secure/Lax Cookie 会话；闲置 8 小�
 | `UNIPASS_LDAP_WRITABLE_CONFIRMED` | 真实写权限核验后设 true；默认 false |
 | `UNIPASS_PASSWORD_HISTORY_VERIFIED` / `UNIPASS_RESET_HISTORY_VERIFIED` | 分别核验目录用户改密与重置历史策略后设 true；默认拒绝相应写入 |
 
-目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V10；因素恢复状态的签发限制见 [因素生命周期](18-MFA因素轮换与受控恢复.md)。V8 要求旧认证重新登录建立 sid 映射，保留 BLOCKED 操作的 fenced epoch；V9 增加 MFA writer 控制、旧密文写入保护及 [主密钥轮换](22-MFA加密主密钥轮换.md)。V10 新增 [持久任务与死信](23-持久同步任务与死信恢复.md)，缺失的飞书/推送适配器返回 BLOCKED，不影响已经完成的本地吊销判定。迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
+目录 TLS 信任通过 JVM trustStore 配置，保持证书链与主机名验证。迁移由启动时 Flyway 执行 V1–V11；因素恢复状态的签发限制见 [因素生命周期](18-MFA因素轮换与受控恢复.md)。V8 要求旧认证重新登录建立 sid 映射，保留 BLOCKED 操作的 fenced epoch；V9 增加 MFA writer 控制、旧密文写入保护及 [主密钥轮换](22-MFA加密主密钥轮换.md)。V10 新增 [持久任务与死信](23-持久同步任务与死信恢复.md)，缺失的飞书/推送投递适配器返回 BLOCKED；V11 新增 [飞书登录、绑定和能力门禁](25-飞书登录与显式绑定.md)，FEISHU 签发及 live 验证额外检查当前绑定与能力，不能解释为飞书客户端全局退出。迁移账号与运行账号拆分仍属部署任务。生产不内置测试账号、默认客户端或自动生成的签名私钥。
 
 ```powershell
 java -jar iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
