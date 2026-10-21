@@ -8,6 +8,9 @@ import java.util.*;
 
 @RestControllerAdvice
 public class ApiErrors {
+    @ExceptionHandler(org.springframework.dao.DataAccessException.class) ResponseEntity<Map<String,String>> storage(){
+        return ResponseEntity.status(503).body(Map.of("error","STATE_UNAVAILABLE","trace_id",UUID.randomUUID().toString()));
+    }
     @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class) ResponseEntity<Map<String,String>> rejected(org.springframework.web.server.ResponseStatusException error) {
         return ResponseEntity.status(error.getStatusCode()).body(Map.of("error","REQUEST_REJECTED","trace_id",UUID.randomUUID().toString()));
     }

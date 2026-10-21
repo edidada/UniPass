@@ -56,11 +56,12 @@ public class SecurityConfiguration {
     @Bean OAuth2TokenCustomizer<JwtEncodingContext> claims(AccountState accounts, Environment env, MfaService mfa) {
         return context -> {
             if (!(context.getPrincipal().getPrincipal() instanceof IdentityPrincipal principal)) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
-            if (!accounts.allowed(principal.getUserId(), principal.getEpoch()) || accounts.mustChange(principal.getUserId())) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
+            if (!accounts.allowed(principal) || accounts.mustChange(principal.getUserId())) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             if (mfa.recoveryRequired(principal.getUserId()) || mfa.required(principal) && principal.getMfaAt()==null) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             context.getJwsHeader().keyId(env.getRequiredProperty("unipass.signing.alias"));
             context.getClaims().subject(principal.getUserId().toString()).claim("auth_epoch", principal.getEpoch())
-                    .claim("unipass_family", context.getAuthorization().getId()).claim("amr", principal.getAuthenticationMethods());
+                    .claim("unipass_family", context.getAuthorization().getId()).claim("amr", principal.getAuthenticationMethods())
+                    .claim("unipass_auth_method",principal.getAuthenticationMethod().name());
             if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
                 context.getJwsHeader().type("at+jwt");
                 List<String> audiences = new ArrayList<>(List.of(context.getRegisteredClient().getClientId()));
@@ -84,6 +85,7 @@ public class SecurityConfiguration {
             try {
                 if (issuer.validate(jwt).hasErrors() || jwt.getClaim("auth_epoch") == null || jwt.getClaimAsString("unipass_family") == null
                         || !accounts.allowed(UUID.fromString(jwt.getSubject()), ((Number) jwt.getClaim("auth_epoch")).longValue())
+                        || "FEISHU".equals(jwt.getClaimAsString("unipass_auth_method")) && !accounts.federatedAllowed(UUID.fromString(jwt.getSubject()),((Number)jwt.getClaim("auth_epoch")).longValue())
                         || !Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM oauth2_authorization WHERE id=? AND revoked=false AND principal_name=?)", Boolean.class, jwt.getClaimAsString("unipass_family"), jwt.getSubject())))
                     throw new IllegalArgumentException("Inactive credential");
             } catch (RuntimeException e) { throw new BadJwtException("Credential inactive or state unavailable"); }
@@ -124,7 +126,8 @@ public class SecurityConfiguration {
         return http.build();
     }
     @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http, DirectoryAuthenticationProvider provider, AccountState accounts, Clock clock, LogoutService logoutService) throws Exception {
-        http.authenticationProvider(provider).authorizeHttpRequests(auth -> auth.requestMatchers("/login", "/error", "/api/public/csrf", "/api/password/reset/**").permitAll().anyRequest().authenticated())
+        http.authenticationProvider(provider).authorizeHttpRequests(auth -> auth.requestMatchers("/login", "/error", "/api/public/csrf", "/api/password/reset/**",
+                        "/api/connector/feishu/login/start","/api/connector/feishu/callback").permitAll().anyRequest().authenticated())
                 .formLogin(Customizer.withDefaults()).logout(logout -> logout.addLogoutHandler((request,response,authentication) -> logoutService.browser(authentication)));
         http.headers(headers -> headers.referrerPolicy(policy -> policy.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER)));
         http.addFilterAfter(new SessionEpochFilter(accounts, clock), SecurityContextHolderFilter.class);

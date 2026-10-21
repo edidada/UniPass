@@ -14,8 +14,10 @@ public class RecoveryJobs {
     private final MfaLifecycleService factors;
     private final BackchannelLogoutWorker logout;
     private final SyncTaskWorker sync;
+    private final FeishuService feishu;
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(RecoveryJobs.class);
-    public RecoveryJobs(RecoveryMailWorker mail,PasswordChangeService passwords,RedisSecurityState security,MfaLifecycleService factors,BackchannelLogoutWorker logout,SyncTaskWorker sync){this.mail=mail;this.passwords=passwords;this.security=security;this.factors=factors;this.logout=logout;this.sync=sync;}
+    public RecoveryJobs(RecoveryMailWorker mail,PasswordChangeService passwords,RedisSecurityState security,MfaLifecycleService factors,BackchannelLogoutWorker logout,SyncTaskWorker sync,FeishuService feishu){this.mail=mail;this.passwords=passwords;this.security=security;this.factors=factors;this.logout=logout;this.sync=sync;this.feishu=feishu;}
+    @Scheduled(fixedDelayString="${unipass.jobs.feishu-cleanup-delay-ms:60000}") void feishu(){try{feishu.cleanup();}catch(RuntimeException e){LOG.warn("Feishu flow cleanup unavailable");}}
     @Scheduled(fixedDelayString="${unipass.jobs.sync-delay-ms:1000}") void sync(){try{sync.runOnce();}catch(RuntimeException e){LOG.warn("Sync delivery storage unavailable");}}
     @Scheduled(fixedDelayString="${unipass.jobs.logout-delay-ms:1000}") void logout(){try{logout.runOnce();}catch(RuntimeException e){LOG.warn("Back-channel logout delivery unavailable");}}
     @Scheduled(fixedDelayString="${unipass.jobs.security-delay-ms:1000}") void security(){
