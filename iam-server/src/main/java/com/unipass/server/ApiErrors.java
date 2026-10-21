@@ -11,7 +11,7 @@ public class ApiErrors {
     @ExceptionHandler(org.springframework.security.authentication.BadCredentialsException.class) ResponseEntity<Map<String,String>> inactive(){
         return ResponseEntity.status(401).body(Map.of("error","SESSION_UNAVAILABLE","trace_id",UUID.randomUUID().toString()));
     }
-    @ExceptionHandler(org.springframework.dao.DataAccessException.class) ResponseEntity<Map<String,String>> storage(){
+    @ExceptionHandler({org.springframework.dao.DataAccessException.class,org.springframework.transaction.TransactionException.class}) ResponseEntity<Map<String,String>> storage(){
         return ResponseEntity.status(503).body(Map.of("error","STATE_UNAVAILABLE","trace_id",UUID.randomUUID().toString()));
     }
     @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class) ResponseEntity<Map<String,String>> rejected(org.springframework.web.server.ResponseStatusException error) {
