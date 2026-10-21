@@ -56,7 +56,7 @@ public final class FeishuService {
             if(jdbc.queryForObject("SELECT count(*) FROM feishu_flow WHERE created_at>clock_timestamp()-interval '5 minutes' AND (ip_digest=? OR session_digest=?)",Integer.class,address,browser)>=20
                     || jdbc.queryForObject("SELECT count(*) FROM feishu_flow WHERE created_at>clock_timestamp()-interval '5 minutes' AND session_digest=?",Integer.class,browser)>=5)
                 throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Flow rate limited");
-            if(binding)accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            if(binding)accounts.lockAndRequire(principal);
             jdbc.update("INSERT INTO feishu_flow(state_digest,session_digest,ip_digest,mode,actor_id,actor_epoch,expires_at) VALUES (?,?,?,?,?,?,clock_timestamp()+interval '5 minutes')",
                     DigestAuthorizationService.digest(state),browser,address,binding?"BIND":"LOGIN",binding?principal.getUserId():null,binding?principal.getEpoch():null);
         });
@@ -82,7 +82,7 @@ public final class FeishuService {
             return tx.execute(ignored->{
                 ready();
                 if(attempt.mode.equals("BIND")){
-                    strong(principal);accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+                    strong(principal);accounts.lockAndRequire(principal);
                     var existing=jdbc.queryForList("SELECT user_id,tenant_key,open_id FROM feishu_binding WHERE user_id=? OR (tenant_key=? AND open_id=?) FOR UPDATE",
                             principal.getUserId(),external.tenant(),external.openId());
                     if(existing.stream().anyMatch(row->!principal.getUserId().equals(row.get("user_id")) || !external.tenant().equals(row.get("tenant_key")) || !external.openId().equals(row.get("open_id"))))
@@ -100,6 +100,7 @@ public final class FeishuService {
                 accounts.lockAndRequire(user,epoch);
                 if(!accounts.federatedAllowed(user,epoch) || accounts.mustChange(user) || mfa.recoveryRequired(user))throw rejected();
                 var result=new IdentityPrincipal(user,epoch,clock.instant(),accounts.roles(user),null,IdentityPrincipal.Method.FEISHU,null);
+                accounts.registerLogin(result);
                 accounts.audit(user,"FEISHU_LOGIN_SUCCESS");return result;
             });
         } catch(org.springframework.dao.DuplicateKeyException conflict){throw new ResponseStatusException(HttpStatus.CONFLICT,"Binding unavailable");}
@@ -107,7 +108,7 @@ public final class FeishuService {
     }
     public void unlink(IdentityPrincipal principal){
         strong(principal);tx.executeWithoutResult(ignored->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            accounts.lockAndRequire(principal);
             if(jdbc.update("DELETE FROM feishu_binding WHERE user_id=?",principal.getUserId())>0){
                 jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",principal.getUserId());
                 audit(principal.getUserId(),"FEISHU_BINDING_REMOVED");

@@ -19,7 +19,7 @@ public final class AdminPasswordService {
     }
     private AuthenticatedActor actor(IdentityPrincipal principal,String authority){
         if(!principal.hasRecentPassword(clock.instant()) || !accounts.roles(principal.getUserId()).contains("ROLE_ADMIN_"+authority) || !mfa.recent(principal))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Administrative authority and recent password/MFA required");
-        return new AuthenticatedActor(principal.getUserId(),principal.getEpoch(),principal.getPasswordAuthenticatedAt(),Set.of(authority),principal.getMfaAt());
+        return new AuthenticatedActor(principal.getUserId(),principal.getEpoch(),principal.getPasswordAuthenticatedAt(),Set.of(authority),principal.getMfaAt(),principal.getLoginId());
     }
     public PasswordOperation reset(IdentityPrincipal principal,UUID target,String key,String reason,char[] password,char[] confirmation){
         try {
@@ -43,7 +43,7 @@ public final class AdminPasswordService {
     private UUID intent(IdentityPrincipal principal,UUID target,String action,String key,String reason,String evidence,UUID requestedOperation){
         if(key==null || !key.matches("[a-zA-Z0-9_-]{16,128}") || reason==null || reason.isBlank() || reason.length()>500 || reason.codePoints().anyMatch(Character::isISOControl))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Reason and idempotency key required");
         return tx.execute(status->{
-            accounts.lockAndRequire(principal.getUserId(),principal.getEpoch());
+            accounts.lockAndRequire(principal);
             if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM iam_user WHERE id=?)",Boolean.class,target)))throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Identity unavailable");
             UUID id=UUID.randomUUID();
             jdbc.update("INSERT INTO admin_password_action(id,actor_id,target_id,action,idempotency_key,reason,evidence_ref,requested_operation_id,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",id,principal.getUserId(),target,action,key,reason,evidence,requestedOperation,Timestamp.from(clock.instant()));

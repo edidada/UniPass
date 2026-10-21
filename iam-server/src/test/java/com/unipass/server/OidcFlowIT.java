@@ -45,6 +45,8 @@ class OidcFlowIT {
     @Autowired PasswordReauthentication reauthentication;
     @Autowired DigestAuthorizationService authorizations;
     @Autowired MfaService mfa;
+    @Autowired AccountState accounts;
+    @Autowired LoginSessions loginSessions;
     @Autowired MfaKeyService factorKeys;
     @Autowired MfaLifecycleService factors;
     @Autowired EmailRecoveryService recovery;
@@ -156,13 +158,14 @@ class OidcFlowIT {
         var response=post(client,"/login",Map.of("username",employee,"password",directory.password,"_csrf",csrf.group(1)),null);assertEquals(302,response.statusCode(),response.body());
     }
     private HttpResponse<String> postJson(HttpClient client,String path,Object value) throws Exception {
-        var csrf=json.readTree(get(client,"/api/session/csrf").body());
-        return client.send(HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header(csrf.get("header_name").asText(),csrf.get("token").asText())
+        var csrfResponse=get(client,"/api/session/csrf");assertEquals(200,csrfResponse.statusCode(),csrfResponse.body());
+        var csrf=json.readTree(csrfResponse.body());
+        return client.send(HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header("Origin",ISSUER).header(csrf.get("header_name").asText(),csrf.get("token").asText())
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(value))).build(),HttpResponse.BodyHandlers.ofString());
     }
     private HttpResponse<String> recoveryJson(HttpClient client,String path,Object value,String key) throws Exception {
         var csrf=json.readTree(get(client,"/api/public/csrf").body());
-        var request=HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header(csrf.get("header_name").asText(),csrf.get("token").asText());
+        var request=HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header("Origin",ISSUER).header(csrf.get("header_name").asText(),csrf.get("token").asText());
         if(key!=null)request.header("Idempotency-Key",key);
         return client.send(request.POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(value))).build(),HttpResponse.BodyHandlers.ofString());
     }
@@ -320,7 +323,8 @@ class OidcFlowIT {
         jdbc.update("INSERT INTO password_operation(id,user_id,idempotency_key,state,operation_type,fenced_epoch,lease_until,created_at) VALUES (?,?,'test-blocked-fence','UNKNOWN','CHANGE',1,now()-interval '1 minute',now())",operation,user);
         redisTemplate.delete(securityState.generationKey());assertTrue(securityState.recoverIfNeeded());
         assertEquals(1L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
-        var actor=new com.unipass.password.AuthenticatedActor(admin,1,Instant.now(),Set.of("PASSWORD_RECOVERY"),Instant.now());
+        var adminLogin=register(new IdentityPrincipal(admin,1,Instant.now(),List.of("ROLE_USER")));
+        var actor=new com.unipass.password.AuthenticatedActor(admin,1,Instant.now(),Set.of("PASSWORD_RECOVERY"),Instant.now(),adminLogin.getLoginId());
         assertEquals(com.unipass.password.PasswordOperation.State.REJECTED,passwords.recover(actor,operation,false,"ticket:redis-incident/evidence").state());
         assertEquals("OPEN",jdbc.queryForObject("SELECT password_gate FROM iam_user WHERE id=?",String.class,user));
         assertEquals(401,api(before.get("access_token").asText()).statusCode());
@@ -360,7 +364,8 @@ class OidcFlowIT {
         var cipher=new MfaSecretCipher(Base64.getEncoder().encodeToString(new byte[32]));
         jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled) VALUES (?,?,true)",identity,cipher.encrypt(identity,secret));return secret;
     }
-    private IdentityPrincipal principal(){return new IdentityPrincipal(user,0,Instant.now(),List.of("ROLE_USER"));}
+    private IdentityPrincipal register(IdentityPrincipal principal){return accounts.registerLogin(principal);}
+    private IdentityPrincipal principal(){return register(new IdentityPrincipal(user,0,Instant.now(),List.of("ROLE_USER")));}
     private IdentityPrincipal strongPrincipal(){return principal().withMfa(Instant.now());}
     private static String nextFactorKey(){byte[] raw=new byte[32];Arrays.fill(raw,(byte)1);return Base64.getEncoder().encodeToString(raw);}
     @Test void masterKeySwitchKeepsLiveAuthorizationAndConfirmsLegacyPendingWithCurrentWriter()throws Exception{
@@ -425,7 +430,7 @@ class OidcFlowIT {
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.confirm(actor,"owner",expired.id(),"123456"));assertEquals(1,factors.expire());
         assertEquals(3,jdbc.queryForObject("SELECT count(*) FROM mfa_factor_change WHERE secret_cipher IS NULL",Integer.class));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.rotate(actor.withMfa(Instant.now().minusSeconds(600)),"owner"));
-        var stalePassword=new IdentityPrincipal(user,0,Instant.now().minusSeconds(600),List.of("ROLE_USER"),Instant.now());
+        var stalePassword=register(new IdentityPrincipal(user,0,Instant.now().minusSeconds(600),List.of("ROLE_USER"),Instant.now()));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.rotate(stalePassword,"owner"));
         assertArrayEquals(original,jdbc.queryForObject("SELECT secret_cipher FROM mfa_totp WHERE user_id=?",byte[].class,user));
     }
@@ -467,7 +472,7 @@ class OidcFlowIT {
         assertEquals(403,recoveryJson(admin,"/api/admin/mfa/users/"+user+"/recovery",body,key).statusCode());
         assertEquals(403,admin.send(HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header("Idempotency-Key",key).POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
         HttpClient weak=browser();login(weak);assertEquals(403,recoveryJson(weak,path,body,key).statusCode());
-        var stale=new IdentityPrincipal(user,0,Instant.now().minusSeconds(600),List.of("ROLE_ADMIN_MFA_RECOVERY"),Instant.now());
+        var stale=register(new IdentityPrincipal(user,0,Instant.now().minusSeconds(600),List.of("ROLE_ADMIN_MFA_RECOVERY"),Instant.now()));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.authorizeRecovery(stale,target,key,"Verified case","ticket:MFA-200/evidence"));
         jdbc.update("UPDATE iam_user SET password_gate='BLOCKED' WHERE id=?",target);assertEquals(409,recoveryJson(admin,path,body,key).statusCode());
         jdbc.update("UPDATE iam_user SET password_gate='OPEN' WHERE id=?",target);jdbc.update("DELETE FROM iam_user_role WHERE user_id=? AND role='ROLE_ADMIN_MFA_RECOVERY'",user);
@@ -477,9 +482,9 @@ class OidcFlowIT {
         var admin=recoveryOperator();UUID target=target();seedFactor(target);
         var expired=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Verified case","ticket:MFA-300/evidence");
         jdbc.update("UPDATE mfa_recovery_grant SET expires_at=now()-interval '1 second' WHERE id=?",expired.id());
-        var targetPrincipal=new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER"));
+        var targetPrincipal=register(new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER")));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(targetPrincipal,"owner",expired.token()));
-        var fresh=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Reverified case","ticket:MFA-301/evidence");var current=new IdentityPrincipal(target,2,Instant.now(),List.of("ROLE_USER"));
+        var fresh=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Reverified case","ticket:MFA-301/evidence");var current=register(new IdentityPrincipal(target,2,Instant.now(),List.of("ROLE_USER")));
         jdbc.update("DELETE FROM iam_user_role WHERE user_id=? AND role='ROLE_ADMIN_MFA_RECOVERY'",user);
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(current,"owner",fresh.token()));
         jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_ADMIN_MFA_RECOVERY')",user);var pending=factors.recover(current,"owner",fresh.token());
@@ -492,7 +497,7 @@ class OidcFlowIT {
     }
     @Test void concurrentRecoveryRedemptionConsumesOneCapabilityAndExpiryNeverEnablesPasswordOnlyAccess() throws Exception {
         var admin=recoveryOperator();UUID target=target();seedFactor(target);var grant=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Verified case","ticket:MFA-400/evidence");
-        var actor=new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER"));ExecutorService pool=Executors.newFixedThreadPool(2);
+        var actor=register(new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER")));ExecutorService pool=Executors.newFixedThreadPool(2);
         Callable<Boolean> redeem=()->{try{factors.recover(actor,UUID.randomUUID().toString(),grant.token());return true;}catch(org.springframework.web.server.ResponseStatusException e){return false;}};
         try{var first=pool.submit(redeem);var second=pool.submit(redeem);assertNotEquals(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS));}finally{pool.shutdownNow();}
         assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM mfa_factor_change WHERE state='PENDING'",Integer.class));
@@ -502,8 +507,8 @@ class OidcFlowIT {
     @Test void recoveryCancellationAndTargetEpochChangesNeverRemoveTheEnrollmentBarrier() {
         var admin=recoveryOperator();UUID target=target();seedFactor(target);
         var grant=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Verified case","ticket:MFA-500/evidence");
-        var actor=new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER"));
-        var stale=new IdentityPrincipal(target,1,Instant.now().minusSeconds(600),List.of("ROLE_USER"));
+        var actor=register(new IdentityPrincipal(target,1,Instant.now(),List.of("ROLE_USER")));
+        var stale=register(new IdentityPrincipal(target,1,Instant.now().minusSeconds(600),List.of("ROLE_USER")));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(stale,"owner",grant.token()));
         var pending=factors.recover(actor,"owner",grant.token());factors.cancel(actor,"owner",pending.id());
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(actor,"owner",grant.token()));
@@ -511,7 +516,7 @@ class OidcFlowIT {
         assertTrue(mfa.recoveryRequired(target));assertFalse(mfa.enrolled(target));
         var fresh=factors.authorizeRecovery(admin,target,UUID.randomUUID().toString(),"Reverified case","ticket:MFA-501/evidence");
         jdbc.update("UPDATE iam_user SET auth_epoch=auth_epoch+1 WHERE id=?",target);
-        var changed=new IdentityPrincipal(target,3,Instant.now(),List.of("ROLE_USER"));
+        var changed=register(new IdentityPrincipal(target,3,Instant.now(),List.of("ROLE_USER")));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.recover(changed,"owner",fresh.token()));
         assertTrue(mfa.recoveryRequired(target));assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM mfa_factor_change WHERE secret_cipher IS NOT NULL",Integer.class));
     }
@@ -640,6 +645,102 @@ class OidcFlowIT {
         assertEquals(200,refresh("web",first.get("refresh_token").asText()).statusCode());
         assertEquals(401,api(first.get("id_token").asText()).statusCode());
     }
+    private UUID currentLogin(HttpClient browser)throws Exception{
+        var response=get(browser,"/api/session/logins");assertEquals(200,response.statusCode(),response.body());
+        for(var entry:json.readTree(response.body()).get("entries"))if(entry.get("current").asBoolean())return UUID.fromString(entry.get("id").asText());
+        throw new AssertionError("Current login missing");
+    }
+    @Test void individualRevocationDeniesOnlyThatLoginAndEveryAssociatedClientGrant()throws Exception{
+        var owner=browser();var ownerToken=tokens(owner,"web");
+        var victim=browser();var first=tokens(victim,"web");var second=tokens(victim,"web-two");
+        var survivor=browser();var surviving=tokens(survivor,"web");
+        UUID login=currentLogin(victim);
+        assertEquals(204,postJson(owner,"/api/session/logins/"+login+"/revoke",Map.of()).statusCode());
+        assertEquals(204,postJson(owner,"/api/session/logins/"+login+"/revoke",Map.of()).statusCode());
+        assertEquals(401,get(victim,"/api/session/me").statusCode());
+        assertEquals(401,api(first.get("access_token").asText()).statusCode());assertEquals(401,api(second.get("access_token").asText()).statusCode());
+        assertEquals(400,refresh("web",first.get("refresh_token").asText()).statusCode());
+        assertEquals(400,refresh("web-two",second.get("refresh_token").asText()).statusCode());
+        assertEquals(200,api(ownerToken.get("access_token").asText()).statusCode());assertEquals(200,api(surviving.get("access_token").asText()).statusCode());
+        assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='LOGIN_REVOKED'",Integer.class));
+        assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM oauth2_authorization WHERE revoked AND id IN (SELECT authorization_id FROM iam_login_grant WHERE login_id=?)",Integer.class,login));
+    }
+    @Test void sessionManagementRequiresCsrfOriginOwnershipAndRecentPassword()throws Exception{
+        var owner=browser();login(owner);UUID current=currentLogin(owner);UUID foreign=register(new IdentityPrincipal(target(),0,Instant.now(),List.of("ROLE_USER"))).getLoginId();
+        String path="/api/session/logins/"+current+"/revoke";var csrf=json.readTree(get(owner,"/api/session/csrf").body());
+        for(String origin:List.of("", "null", "https://evil.example",ISSUER+"/")){
+            var request=HttpRequest.newBuilder(uri(path)).header("Content-Type","application/json").header(csrf.get("header_name").asText(),csrf.get("token").asText());
+            if(!origin.isEmpty())request.header("Origin",origin);
+            assertEquals(403,owner.send(request.POST(HttpRequest.BodyPublishers.ofString("{}")).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        }
+        assertEquals(403,owner.send(HttpRequest.newBuilder(uri(path)).header("Origin",ISSUER).POST(HttpRequest.BodyPublishers.noBody()).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(404,postJson(owner,"/api/session/logins/"+foreign+"/revoke",Map.of()).statusCode());
+        assertEquals(404,postJson(owner,"/api/session/logins/"+UUID.randomUUID()+"/revoke",Map.of()).statusCode());
+        assertEquals(404,get(owner,"/api/session/logins?before="+foreign).statusCode());
+        var stale=register(new IdentityPrincipal(user,0,Instant.now().minusSeconds(600),List.of("ROLE_USER")));
+        assertEquals(403,assertThrows(org.springframework.web.server.ResponseStatusException.class,()->loginSessions.revoke(stale,current)).getStatusCode().value());
+        assertEquals(200,get(owner,"/api/session/me").statusCode());
+    }
+    @Test void sessionRevocationRequiresMfaAndStableLoginSurvivesBothStepUps()throws Exception{
+        var owner=browser();login(owner);UUID login=currentLogin(owner);byte[] secret=seedFactor();
+        assertEquals(403,postJson(owner,"/api/session/logins/"+login+"/revoke",Map.of()).statusCode());
+        stepUp(owner,secret,Instant.now());assertEquals(login,currentLogin(owner));
+        assertEquals(200,postJson(owner,"/api/session/reauthenticate",Map.of("password",OLD)).statusCode());assertEquals(login,currentLogin(owner));
+        assertEquals(204,postJson(owner,"/api/session/logins/"+login+"/revoke",Map.of()).statusCode());
+        assertNotEquals(200,get(owner,"/api/session/me").statusCode());
+    }
+    @Test void sessionListingUsesOwnerScopedPaginationAndNeverReturnsCredentials()throws Exception{
+        var owner=browser();login(owner);UUID current=currentLogin(owner);
+        for(int count=0;count<54;count++)principal();
+        var page=get(owner,"/api/session/logins");assertEquals(200,page.statusCode(),page.body());var first=json.readTree(page.body());
+        assertEquals(50,first.get("entries").size());assertFalse(first.get("nextCursor").isNull());
+        var next=get(owner,"/api/session/logins?before="+first.get("nextCursor").asText());var last=json.readTree(next.body());assertEquals(5,last.get("entries").size());assertTrue(last.get("nextCursor").isNull());
+        Set<String> ids=new HashSet<>();for(var entry:first.get("entries"))assertTrue(ids.add(entry.get("id").asText()));for(var entry:last.get("entries"))assertTrue(ids.add(entry.get("id").asText()));
+        assertTrue(ids.contains(current.toString()));
+        assertFalse(page.body().contains("password"));assertFalse(page.body().contains("UNIPASS_SSO"));assertFalse(page.body().contains("token"));
+    }
+    @Test void deferredRevocationCommitFailureLeavesLoginAndTokensUsable()throws Exception{
+        var owner=browser();login(owner);var victim=browser();var issued=tokens(victim,"web");UUID login=currentLogin(victim);
+        jdbc.execute("CREATE FUNCTION reject_login_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test login commit failure'; END $$");
+        jdbc.execute("CREATE CONSTRAINT TRIGGER reject_login_commit AFTER UPDATE ON iam_login DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.revoked_at IS NOT NULL AND OLD.revoked_at IS NULL) EXECUTE FUNCTION reject_login_commit()");
+        try{
+            assertEquals(503,postJson(owner,"/api/session/logins/"+login+"/revoke",Map.of()).statusCode());
+            assertTrue(jdbc.queryForObject("SELECT revoked_at IS NULL FROM iam_login WHERE id=?",Boolean.class,login));
+            assertEquals(200,api(issued.get("access_token").asText()).statusCode());assertEquals(200,get(victim,"/api/session/me").statusCode());
+        }finally{jdbc.execute("DROP TRIGGER reject_login_commit ON iam_login");jdbc.execute("DROP FUNCTION reject_login_commit()");}
+        assertEquals(204,postJson(owner,"/api/session/logins/"+login+"/revoke",Map.of()).statusCode());assertEquals(401,api(issued.get("access_token").asText()).statusCode());
+    }
+    @Test void concurrentRefreshCannotEscapeIndividualRevocation()throws Exception{
+        var owner=principal();var victim=browser();var issued=tokens(victim,"web");UUID login=currentLogin(victim);
+        var pool=Executors.newFixedThreadPool(2);var start=new CountDownLatch(1);
+        try{
+            var refreshed=pool.submit(()->{start.await();return refresh("web",issued.get("refresh_token").asText());});
+            var revoked=pool.submit(()->{start.await();loginSessions.revoke(owner,login);return true;});start.countDown();
+            var response=refreshed.get(15,TimeUnit.SECONDS);assertTrue(revoked.get(15,TimeUnit.SECONDS));
+            assertTrue(Set.of(200,400).contains(response.statusCode()),response.body());
+            if(response.statusCode()==200){var rotated=json.readTree(response.body());assertEquals(401,api(rotated.get("access_token").asText()).statusCode());assertEquals(400,refresh("web",rotated.get("refresh_token").asText()).statusCode());}
+            assertEquals(401,api(issued.get("access_token").asText()).statusCode());
+        }finally{pool.shutdownNow();}
+    }
+    @Test void individualRevocationDuringDirectoryVerificationPreventsPasswordWrite()throws Exception{
+        var victim=principal();var owner=principal();var actor=com.unipass.password.AuthenticatedActor.user(user,0,victim.getPasswordAuthenticatedAt(),victim.getLoginId());
+        directory.afterVerify=()->loginSessions.revoke(owner,victim.getLoginId());
+        var failure=assertThrows(com.unipass.password.PasswordFailure.class,()->passwords.change(actor,UUID.randomUUID().toString(),OLD.toCharArray(),NEW.toCharArray(),NEW.toCharArray()));
+        assertEquals(com.unipass.password.PasswordFailure.Code.STALE_SESSION,failure.code());assertEquals(OLD,directory.password);
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM password_operation",Integer.class));
+        assertEquals(0L,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user));
+    }
+    @Test void individualRevocationEnqueuesBackchannelForThatLoginOnly()throws Exception{
+        var client=clients.findByClientId("web");clients.save(RegisteredClient.from(client).clientSettings(ClientSettings.withSettings(client.getClientSettings().getSettings())
+                .setting("unipass.backchannel_logout_uri","https://rp.example.test/backchannel").build()).build());
+        try{
+            var owner=browser();var kept=tokens(owner,"web");var victim=browser();tokens(victim,"web");UUID login=currentLogin(victim);
+            assertEquals(204,postJson(owner,"/api/session/logins/"+login+"/revoke",Map.of()).statusCode());
+            assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM oidc_logout_task WHERE state='PENDING'",Integer.class));
+            assertEquals(200,api(kept.get("access_token").asText()).statusCode());
+        }finally{clients.save(client);}
+    }
     @Test void revocationMakesJwtAndRefreshUnusable() throws Exception {
         var first=tokens(browser(),"web");
         var revoked=post(browser(),"/oauth/revoke",Map.of("token",first.get("refresh_token").asText(),"token_type_hint","refresh_token"),"web");
@@ -720,9 +821,10 @@ class OidcFlowIT {
         assertNotEquals(before,after);assertEquals(200,get(browser,"/api/session/me").statusCode());
         assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='PASSWORD_REAUTH_SUCCESS'",Integer.class));
     }
-    @Test void federatedOtpCannotReplacePasswordProofAndReauthenticationKeepsLoginLifetime(){
+    @Test void federatedOtpCannotReplacePasswordProofAndReauthenticationKeepsLoginLifetime()throws Exception{
+        feishuBind();
         var login=Instant.now().minusSeconds(600);
-        var external=new IdentityPrincipal(user,0,login,List.of("ROLE_USER"),Instant.now(),IdentityPrincipal.Method.FEISHU,null);
+        var external=register(new IdentityPrincipal(user,0,login,List.of("ROLE_USER"),Instant.now(),IdentityPrincipal.Method.FEISHU,null));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->mfa.enroll(external));
         assertThrows(org.springframework.web.server.ResponseStatusException.class,()->factors.rotate(external,"external-session"));
         char[] input=OLD.toCharArray();var upgraded=reauthentication.verify(external,input,"test:external");

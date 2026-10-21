@@ -47,12 +47,16 @@ public final class DigestAuthorizationService implements OAuth2AuthorizationServ
             boolean revoked = Boolean.TRUE.equals(jdbc.query("SELECT revoked FROM oauth2_authorization WHERE id=? FOR UPDATE",
                     r -> r.next() && r.getBoolean(1), authorization.getId()));
             if (revoked) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
+            var login=jdbc.queryForList("SELECT login_id FROM iam_login_grant WHERE authorization_id=?",UUID.class,authorization.getId());
+            if(!login.isEmpty() && !login.get(0).equals(principal.getLoginId()))throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             OAuth2Authorization.Builder hashed = OAuth2Authorization.from(authorization);
             for (Class<? extends OAuth2Token> type : tokenClasses()) {
                 var token = authorization.getToken(type);
                 if (token != null) hashed.token(copy(token.getToken(), storedDigest(token.getToken().getTokenValue())), meta -> meta.putAll(token.getMetadata()));
             }
             delegate.save(hashed.build());
+            jdbc.update("INSERT INTO iam_login_grant(authorization_id,login_id) VALUES (?,?) ON CONFLICT(authorization_id) DO NOTHING",
+                    authorization.getId(),principal.getLoginId());
             if(authorization.getToken(OidcIdToken.class)!=null){
                 var client=clients.findById(authorization.getRegisteredClientId());
                 String target=client==null?null:client.getClientSettings().getSetting("unipass.backchannel_logout_uri");

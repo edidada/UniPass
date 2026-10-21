@@ -30,6 +30,7 @@ public final class DirectoryAuthenticationProvider implements AuthenticationProv
             return transactions.execute(status -> {
                 accounts.lockAndRequire(user.id(), user.epoch());
                 IdentityPrincipal principal = new IdentityPrincipal(user.id(), user.epoch(), clock.instant(), accounts.roles(user.id()));
+                accounts.registerLogin(principal);
                 accounts.audit(user.id(), "LOGIN_SUCCESS");
                 return UsernamePasswordAuthenticationToken.authenticated(principal, null, principal.getAuthorities());
             });

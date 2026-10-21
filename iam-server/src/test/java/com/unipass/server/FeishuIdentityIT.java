@@ -42,7 +42,7 @@ class FeishuIdentityIT {
         admin.recordLoginVerification("operator:fixture","ticket:fixture-contract");
     }
     private void user(UUID id){jdbc.update("INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version) VALUES (?,?,?,'OPENLDAP','uid=test','Test','ACTIVE','feishu-test',1)",id,id.toString(),id);}
-    private IdentityPrincipal principal(UUID user){return new IdentityPrincipal(user,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user),Instant.now(),List.of("ROLE_USER"));}
+    private IdentityPrincipal principal(UUID user){return accounts.registerLogin(new IdentityPrincipal(user,jdbc.queryForObject("SELECT auth_epoch FROM iam_user WHERE id=?",Long.class,user),Instant.now(),List.of("ROLE_USER")));}
     private String state(boolean binding,IdentityPrincipal principal,String session){return FeishuFixture.parameters(URI.create(service.start(binding,principal,session,"fixture-ip").authorizationUrl()).getRawQuery()).get("state");}
     private void bind(UUID user,String code){String session="binding-"+UUID.randomUUID();var actor=principal(user);assertNull(service.callback(state(true,actor,session),code,null,actor,session));}
     @Test void upgradeDefaultsAndCapabilityEvidenceRemainFailClosed(){

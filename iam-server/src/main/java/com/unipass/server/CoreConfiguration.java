@@ -38,7 +38,15 @@ public class CoreConfiguration {
     }
     @Bean PasswordChangeService passwords(Database db, DirectoryGateway directory, Clock clock, Environment env) {
         return new PasswordChangeService(db, directory, PasswordPolicy.defaults(), clock,
-                env.getProperty("unipass.password.history-verified", Boolean.class, false), env.getProperty("unipass.password.reset-history-verified", Boolean.class, false));
+                env.getProperty("unipass.password.history-verified", Boolean.class, false), env.getProperty("unipass.password.reset-history-verified", Boolean.class, false),
+                (connection,actor)->{
+                    try(var statement=connection.prepareStatement("SELECT EXISTS(SELECT 1 FROM iam_login WHERE id=? AND user_id=? AND auth_epoch=? AND revoked_at IS NULL)")){
+                        statement.setObject(1,actor.loginId());statement.setObject(2,actor.userId());statement.setLong(3,actor.authEpoch());
+                        try(var rows=statement.executeQuery()){
+                            if(!rows.next() || !rows.getBoolean(1))throw new PasswordFailure(PasswordFailure.Code.STALE_SESSION);
+                        }
+                    }
+                });
     }
     @Bean CookieSerializer cookieSerializer(Environment env) {
         DefaultCookieSerializer cookie = new DefaultCookieSerializer(); cookie.setCookieName("UNIPASS_SSO");

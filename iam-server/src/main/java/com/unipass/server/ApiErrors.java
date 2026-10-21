@@ -8,6 +8,9 @@ import java.util.*;
 
 @RestControllerAdvice
 public class ApiErrors {
+    @ExceptionHandler(org.springframework.security.authentication.BadCredentialsException.class) ResponseEntity<Map<String,String>> inactive(){
+        return ResponseEntity.status(401).body(Map.of("error","SESSION_UNAVAILABLE","trace_id",UUID.randomUUID().toString()));
+    }
     @ExceptionHandler(org.springframework.dao.DataAccessException.class) ResponseEntity<Map<String,String>> storage(){
         return ResponseEntity.status(503).body(Map.of("error","STATE_UNAVAILABLE","trace_id",UUID.randomUUID().toString()));
     }

@@ -17,6 +17,9 @@ public final class PasswordChangeService {
     private final boolean directoryHistoryVerified;
     private final boolean resetHistoryVerified;
     private final Hook hook;
+    private final CredentialGuard credentials;
+    /** Invoked inside the password transaction, after locking the actor's identity. */
+    @FunctionalInterface public interface CredentialGuard { void require(Connection connection,AuthenticatedActor actor) throws SQLException; }
     enum Point { AFTER_PREPARE, AFTER_DIRECTORY_WRITE, BEFORE_COMMIT, AFTER_COMMIT }
     @FunctionalInterface interface Hook { void at(Point point); }
     private record User(UUID id, String directoryId, String type, String employee, String name, String status, String gate, long epoch) { }
@@ -35,8 +38,17 @@ public final class PasswordChangeService {
     }
     private PasswordChangeService(Database database, DirectoryGateway directory, PasswordPolicy policy,
                           Clock clock, boolean directoryHistoryVerified, boolean resetHistoryVerified, Hook hook) {
+        this(database,directory,policy,clock,directoryHistoryVerified,resetHistoryVerified,hook,(connection,actor)->{});
+    }
+    public PasswordChangeService(Database database,DirectoryGateway directory,PasswordPolicy policy,Clock clock,
+                                 boolean directoryHistoryVerified,boolean resetHistoryVerified,CredentialGuard credentials){
+        this(database,directory,policy,clock,directoryHistoryVerified,resetHistoryVerified,point->{},credentials);
+    }
+    private PasswordChangeService(Database database, DirectoryGateway directory, PasswordPolicy policy,
+                          Clock clock, boolean directoryHistoryVerified, boolean resetHistoryVerified, Hook hook,CredentialGuard credentials) {
         this.database = database; this.directory = directory; this.policy = policy; this.clock = clock;
         this.directoryHistoryVerified = directoryHistoryVerified; this.resetHistoryVerified = resetHistoryVerified; this.hook = hook;
+        this.credentials=Objects.requireNonNull(credentials);
     }
 
     /** Takes ownership of all supplied character arrays and clears them, including on replay. */
@@ -141,7 +153,7 @@ public final class PasswordChangeService {
                     // Both user rows are locked in UUID order to avoid cross-admin reset deadlocks.
                     if (admin.userId().compareTo(targetId) < 0) { user(c, admin.userId()); target = user(c, targetId); }
                     else { target = user(c, targetId); user(c, admin.userId()); }
-                    requireActive(user(c, admin.userId()), admin);
+                    requireActive(c,user(c, admin.userId()), admin);
                     PasswordOperation previous = byKey(c, targetId, key);
                     if (previous != null) { c.commit(); return previous; }
                     if (!target.status().equals("ACTIVE") || !target.gate().equals("OPEN")) throw new PasswordFailure(ACCOUNT_BLOCKED);
@@ -164,7 +176,7 @@ public final class PasswordChangeService {
     private User claimAttempt(AuthenticatedActor actor) throws SQLException {
         try (Connection c = transaction()) {
             try {
-                User user = user(c, actor.userId()); requireActive(user, actor);
+                User user = user(c, actor.userId()); requireActive(c,user, actor);
                 try (PreparedStatement s = c.prepareStatement("SELECT requested_at FROM password_request_guard WHERE user_id=? FOR UPDATE")) {
                     s.setObject(1, actor.userId()); try (ResultSet r = s.executeQuery()) {
                         if (r.next() && r.getTimestamp(1).toInstant().plusSeconds(60).isAfter(clock.instant())) throw new PasswordFailure(RATE_LIMITED);
@@ -181,7 +193,7 @@ public final class PasswordChangeService {
                 User user = user(c, actor.userId());
                 PasswordOperation previous = byKey(c, actor.userId(), key);
                 if (previous != null) { c.commit(); return previous; }
-                requireActive(user, actor);
+                requireActive(c,user, actor);
                 try (PreparedStatement s = c.prepareStatement("SELECT 1 FROM password_operation WHERE user_id=? AND state IN ('PREPARED','UNKNOWN')")) {
                     s.setObject(1, user.id()); try (ResultSet r = s.executeQuery()) { if (r.next()) throw new PasswordFailure(CONCURRENT_OPERATION); }
                 }
@@ -271,7 +283,7 @@ public final class PasswordChangeService {
                 PasswordOperation candidate = operation(c, id);
                 if (admin.userId().compareTo(candidate.userId()) < 0) { user(c, admin.userId()); user(c, candidate.userId()); }
                 else { user(c, candidate.userId()); user(c, admin.userId()); }
-                requireActive(user(c, admin.userId()), admin);
+                requireActive(c,user(c, admin.userId()), admin);
                 PasswordOperation operation = lockedOperation(c, id);
                 if (operation.state() != PasswordOperation.State.UNKNOWN) {
                     boolean expected = operation.state() == (confirmedCommitted ? PasswordOperation.State.COMMITTED : PasswordOperation.State.REJECTED);
@@ -350,10 +362,11 @@ public final class PasswordChangeService {
             }
         }
     }
-    private void requireActive(User user, AuthenticatedActor actor) {
+    private void requireActive(Connection connection,User user, AuthenticatedActor actor) throws SQLException {
         if (!user.status().equals("ACTIVE") || !user.gate().equals("OPEN")) throw new PasswordFailure(ACCOUNT_BLOCKED);
         if (user.epoch() != actor.authEpoch()) throw new PasswordFailure(STALE_SESSION);
         if (!user.type().equals(directory.type().name())) throw new PasswordFailure(INVALID_REQUEST);
+        credentials.require(connection,actor);
     }
     private void requireRecent(AuthenticatedActor actor) {
         if (actor == null || actor.authenticatedAt().isAfter(clock.instant()) || actor.authenticatedAt().plus(RECENT_AUTH).isBefore(clock.instant()))
