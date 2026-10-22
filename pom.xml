@@ -9,6 +9,7 @@
     <module>iam-directory</module>
     <module>iam-identity</module>
     <module>iam-password</module>
+    <module>iam-portal</module>
     <module>iam-server</module>
     <module>iam-web</module>
   </modules>

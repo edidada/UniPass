@@ -338,6 +338,15 @@ public final class PasswordChangeService {
     private PasswordOperation findByKey(UUID userId, String key) throws SQLException {
         try (Connection c = database.open()) { return byKey(c, userId, key); }
     }
+    /** Read-only recovery after a lost write response; never resubmits a directory password. */
+    public PasswordOperation getByRequest(UUID requestingUser,String key){
+        validateKey(key);
+        try {
+            PasswordOperation operation=findByKey(requestingUser,key);
+            if(operation==null)throw new PasswordFailure(NOT_FOUND);
+            return operation;
+        }catch(SQLException failure){throw new PasswordFailure(STORAGE_UNAVAILABLE);}
+    }
     private static PasswordOperation byKey(Connection c, UUID userId, String key) throws SQLException {
         try (PreparedStatement s = c.prepareStatement("SELECT id FROM password_operation WHERE user_id=? AND idempotency_key=?")) {
             s.setObject(1, userId); s.setString(2, key); try (ResultSet r = s.executeQuery()) { return r.next() ? operation(c, r.getObject(1, UUID.class)) : null; }

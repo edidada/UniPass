@@ -61,6 +61,15 @@ public final class EmailRecoveryService {
     private void requireBinding(String token,String sessionId){
         if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM reset_browser_grant WHERE token_digest=? AND session_digest=? AND expires_at>?)",Boolean.class,RecoveryMailWorker.digest(token),DigestAuthorizationService.digest(sessionId),now())))throw invalid();
     }
+    public PasswordOperation requestStatus(UUID key,String sessionId){
+        var operations=jdbc.queryForList("""
+                SELECT g.operation_id FROM reset_browser_grant b JOIN password_reset_grant g ON g.token_digest=b.token_digest
+                JOIN password_operation p ON p.id=g.operation_id
+                WHERE b.session_digest=? AND b.expires_at>? AND p.idempotency_key=? AND p.operation_type='RESET'
+                """,UUID.class,DigestAuthorizationService.digest(sessionId),now(),key.toString());
+        if(operations.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Operation unavailable");
+        return status(operations.get(0),sessionId);
+    }
     private static void requireToken(String token){if(token==null || !token.matches("[A-Za-z0-9_-]{43}"))throw invalid();}
     private static ResponseStatusException invalid(){return new ResponseStatusException(HttpStatus.BAD_REQUEST,"Invalid or expired recovery proof");}
     private Timestamp now(){return Timestamp.from(clock.instant());}

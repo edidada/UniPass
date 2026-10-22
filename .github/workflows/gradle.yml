@@ -32,11 +32,30 @@ jobs:
           redis-server --version
       - name: Compile, package and run all unit and integration tests
         run: ./gradlew --no-daemon clean build -PtestRedisExecutable=/usr/bin/redis-server
+      # Separate Gradle tasks drive the pinned Node toolchain: npmCi -> portalTypecheck
+      # (vue-tsc) -> portalTest (vitest) -> portalBuild (vite). Their outputs feed the
+      # iam-portal resources jar bundled into the iam-server executable.
+      - name: Verify packaged portal assets and module dependency
+        run: |
+          EXEC_JAR=iam-server/build/libs/iam-server-0.1.0-SNAPSHOT-exec.jar
+          PORTAL_JAR=iam-portal/build/libs/iam-portal-0.1.0-SNAPSHOT.jar
+          LIST=$(mktemp)
+          trap 'rm -f "$LIST"' EXIT
+          test -f "$EXEC_JAR"
+          jar tf "$EXEC_JAR" > "$LIST"
+          test "$(grep -cF 'BOOT-INF/lib/iam-portal-0.1.0-SNAPSHOT.jar' "$LIST")" -eq 1
+          jar tf "$PORTAL_JAR" > "$LIST"
+          grep -Fq 'META-INF/resources/portal/index.html' "$LIST"
+          test "$(grep -cE '^META-INF/resources/portal/assets/[A-Za-z0-9._-]+\.js$' "$LIST")" -ge 1
+          test "$(grep -cE '^META-INF/resources/portal/assets/[A-Za-z0-9._-]+\.css$' "$LIST")" -ge 1
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gradle-jdk17-test-reports
-          path: '**/build/test-results/**/*.xml'
+          path: |
+            **/build/test-results/**/*.xml
+            **/build/reports/tests/**/*.html
+            **/build/frontend-test-results.xml
           if-no-files-found: warn
           retention-days: 7

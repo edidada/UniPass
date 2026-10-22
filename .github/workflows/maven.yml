@@ -32,6 +32,21 @@ jobs:
           redis-server --version
       - name: Compile, package and run all unit and integration tests
         run: mvn --batch-mode --no-transfer-progress clean verify -Pintegration -Dtest.redis.executable=/usr/bin/redis-server
+      # The frontend chain (npm ci -> vue-tsc -> vitest -> vite build) runs inside the iam-portal
+      # reactor prior to iam-server, so package success already proves the Vue/TypeScript gates.
+      - name: Verify packaged portal assets and module dependency
+        run: |
+          EXEC_JAR=iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
+          PORTAL_JAR=iam-portal/target/iam-portal-0.1.0-SNAPSHOT.jar
+          LIST=$(mktemp)
+          trap 'rm -f "$LIST"' EXIT
+          test -f "$EXEC_JAR"
+          jar tf "$EXEC_JAR" > "$LIST"
+          test "$(grep -cF 'BOOT-INF/lib/iam-portal-0.1.0-SNAPSHOT.jar' "$LIST")" -eq 1
+          jar tf "$PORTAL_JAR" > "$LIST"
+          grep -Fq 'META-INF/resources/portal/index.html' "$LIST"
+          test "$(grep -cE '^META-INF/resources/portal/assets/[A-Za-z0-9._-]+\.js$' "$LIST")" -ge 1
+          test "$(grep -cE '^META-INF/resources/portal/assets/[A-Za-z0-9._-]+\.css$' "$LIST")" -ge 1
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -42,5 +57,6 @@ jobs:
             **/target/surefire-reports/*.txt
             **/target/failsafe-reports/*.xml
             **/target/failsafe-reports/*.txt
+            **/target/frontend-test-results.xml
           if-no-files-found: warn
           retention-days: 7

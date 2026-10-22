@@ -52,7 +52,9 @@ class IndependentRpIT {
     private HttpResponse<String> get(HttpClient client,String uri)throws Exception{return client.send(HttpRequest.newBuilder(URI.create(uri)).timeout(Duration.ofSeconds(15)).GET().build(),HttpResponse.BodyHandlers.ofString());}
     private HttpResponse<String> form(HttpClient client,String uri,Map<String,String> values)throws Exception{
         String body=values.entrySet().stream().map(e->encode(e.getKey())+"="+encode(e.getValue())).collect(java.util.stream.Collectors.joining("&"));
-        return client.send(HttpRequest.newBuilder(URI.create(uri)).timeout(Duration.ofSeconds(15)).header("Content-Type","application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());
+        var request=HttpRequest.newBuilder(URI.create(uri)).timeout(Duration.ofSeconds(15)).header("Content-Type","application/x-www-form-urlencoded");
+        if(uri.equals(issuer()+"/login"))request.header("Origin",issuer());
+        return client.send(request.POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());
     }
     private Process launch(String name,List<String> arguments,Map<String,String> environment)throws Exception{
         List<String> command=new ArrayList<>(List.of(java()));command.addAll(arguments);var builder=new ProcessBuilder(command);
@@ -122,7 +124,7 @@ class IndependentRpIT {
         var start=get(client,rp(name)+"/oauth2/authorization/unipass");assertEquals(302,start.statusCode(),start.body());String authorization=start.headers().firstValue("Location").orElseThrow();
         assertTrue(authorization.contains("code_challenge_method=S256"),authorization);assertTrue(authorization.contains("nonce="));assertTrue(authorization.contains("state="));
         var response=get(client,authorization);String location=response.headers().firstValue("Location").orElse("");
-        if(credentials){assertTrue(location.contains("/login"),location);var page=get(client,issuer()+"/login");Matcher csrf=Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]+)\"").matcher(page.body());assertTrue(csrf.find(),page.body());assertEquals(302,form(client,issuer()+"/login",Map.of("username","E001","password",password,"_csrf",csrf.group(1))).statusCode());response=get(client,authorization);location=response.headers().firstValue("Location").orElse("");}
+        if(credentials){assertTrue(location.contains("/login"),location);var page=get(client,issuer()+"/api/public/csrf");assertEquals(200,page.statusCode(),page.body());var csrf=json.readTree(page.body());assertEquals(302,form(client,issuer()+"/login",Map.of("username","E001","password",password,csrf.get("parameter_name").asText(),csrf.get("token").asText())).statusCode());response=get(client,authorization);location=response.headers().firstValue("Location").orElse("");}
         assertEquals(302,response.statusCode(),response.body());assertTrue(location.startsWith(rp(name)+"/login/oauth2/code/unipass"),location);return location;
     }
     private void login(HttpClient client,String name,boolean credentials)throws Exception{assertEquals(302,get(client,callback(client,name,credentials,PASSWORD)).statusCode());assertEquals(200,get(client,rp(name)+"/bff/profile").statusCode());}
@@ -185,7 +187,7 @@ class IndependentRpIT {
     @Test void directoryPasswordChangeInvalidatesBothIndependentRpsAndTheirApiTokens()throws Exception{
         HttpClient browser=browser();login(browser,"crm",true);login(browser,"hrm",false);String token=stored(browser,"hrm",false).client.getAccessToken().getTokenValue();
         var csrf=json.readTree(get(browser,issuer()+"/api/session/csrf").body());String body=json.writeValueAsString(Map.of("old_password",PASSWORD,"new_password",NEXT,"confirm_password",NEXT));long started=System.nanoTime();
-        var changed=browser.send(HttpRequest.newBuilder(URI.create(issuer()+"/api/password/change")).header("Content-Type","application/json").header(csrf.get("header_name").asText(),csrf.get("token").asText()).header("Idempotency-Key",UUID.randomUUID().toString()).POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());assertEquals(200,changed.statusCode(),changed.body());
+        var changed=browser.send(HttpRequest.newBuilder(URI.create(issuer()+"/api/password/change")).header("Content-Type","application/json").header("Origin",issuer()).header(csrf.get("header_name").asText(),csrf.get("token").asText()).header("Idempotency-Key",UUID.randomUUID().toString()).POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());assertEquals(200,changed.statusCode(),changed.body());
         assertEquals(401,get(browser,rp("crm")+"/bff/profile").statusCode());assertEquals(401,get(browser,rp("hrm")+"/bff/profile").statusCode());assertEquals(401,api("hrm",token).statusCode());revocationMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started));
     }
     @Test void rpLogoutRequiresOriginAndCsrfAndInvalidatesTheOtherRpOnItsNextRequest()throws Exception{

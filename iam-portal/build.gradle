@@ -1,0 +1,70 @@
+// Pure front-end module: no Java sources. The java-library lifecycle is applied by the root
+// subprojects block, so this module still yields a resources-only jar that carries the built
+// portal assets at META-INF/resources/portal/ — exactly like the Maven iam-portal module.
+import com.github.gradle.node.npm.task.NpmTask
+
+apply plugin: 'com.github.node-gradle.node'
+
+// Mirrors the Maven frontend-maven-plugin 2.0.2 pinning and package.json "engines"
+// (.npmrc enables engine-strict=true, so npm ci re-verifies these exact versions).
+node {
+    version = '24.22.1'
+    npmVersion = '11.19.1'
+    download = true
+    // Downloaded toolchains live inside this module's build directory.
+    workDir = layout.buildDirectory.dir('nodejs-dist')
+    npmWorkDir = layout.buildDirectory.dir('nodejs-dist/npm')
+}
+
+// Vite writes the full META-INF/resources/portal tree inside this directory, which the
+// resources source set below publishes into the module jar without any extra copying.
+def portalAssetsOut = layout.buildDirectory.dir('portal-dist/META-INF/resources/portal')
+
+tasks.register('npmCi', NpmTask) {
+    group = 'build'
+    description = 'Resolves front-end dependencies strictly from the pinned package-lock.json.'
+    dependsOn tasks.named('nodeSetup'), tasks.named('npmSetup')
+    args = ['ci', '--no-audit', '--no-fund']
+    inputs.files 'package.json', 'package-lock.json', '.npmrc'
+    outputs.dir layout.projectDirectory.dir('node_modules')
+}
+
+tasks.register('portalTypecheck', NpmTask) {
+    group = 'verification'
+    description = 'Runs vue-tsc --noEmit against the portal sources.'
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'typecheck']
+    inputs.files fileTree('src'), 'package.json', 'package-lock.json', 'tsconfig.json'
+}
+
+tasks.register('portalTest', NpmTask) {
+    group = 'verification'
+    description = 'Runs Vitest unit tests; JUnit report lands in this module build directory.'
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'test']
+    // Redirected from the Maven default target/frontend-test-results.xml so `gradle clean`
+    // (which removes build/) cannot leave a stale report from a previous run behind.
+    environment = ['UNIPASS_PORTAL_REPORT': layout.buildDirectory.file('frontend-test-results.xml').get().asFile.absolutePath]
+    inputs.files fileTree('src'), 'package.json', 'package-lock.json', 'vite.config.mjs'
+}
+
+tasks.register('portalBuild', NpmTask) {
+    group = 'build'
+    description = 'Builds the Vite asset bundle into build/portal-dist (UNIPASS_PORTAL_OUT).'
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'build']
+    // Redirected from the Maven default target/classes/META-INF/resources/portal.
+    environment = ['UNIPASS_PORTAL_OUT': portalAssetsOut.get().asFile.absolutePath]
+    inputs.files fileTree('src'), 'package.json', 'package-lock.json', 'vite.config.mjs', 'tsconfig.json', 'index.html', '.npmrc'
+    outputs.dir portalAssetsOut
+}
+
+// The generated asset tree behaves like src/main/resources: its internal META-INF/... layout
+// becomes the jar layout verbatim.
+sourceSets.main.resources {
+    srcDir layout.buildDirectory.dir('portal-dist')
+}
+tasks.named('processResources') { dependsOn tasks.named('portalBuild') }
+tasks.named('check') {
+    dependsOn tasks.named('portalTypecheck'), tasks.named('portalTest')
+}

@@ -9,6 +9,7 @@ dependencyManagement {
 }
 
 dependencies {
+    implementation project(':iam-portal')
     implementation project(':iam-password')
     implementation 'com.eatthepath:java-otp:1.0.0'
     implementation 'commons-codec:commons-codec'
