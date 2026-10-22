@@ -94,7 +94,7 @@ public class SecurityConfiguration {
         };
     }
     @Bean @Order(1) SecurityFilterChain protocol(HttpSecurity http, DirectoryAuthenticationProvider provider, DigestAuthorizationService authorizations,
-            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa,LoginSessions sessions) throws Exception {
+            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa,LoginSessions sessions,PortalContinuations continuations,BrowserOriginPolicy origins) throws Exception {
         var server = OAuth2AuthorizationServerConfigurer.authorizationServer();
         NativeRefreshSupport nativeClients = new NativeRefreshSupport(clients, clock);
         var logoutSuccess = new org.springframework.security.oauth2.server.authorization.oidc.web.authentication.OidcLogoutAuthenticationSuccessHandler();
@@ -110,8 +110,10 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login")))
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()));
-        http.addFilterAfter(new SessionEpochFilter(accounts, clock,sessions), SecurityContextHolderFilter.class);
-        http.addFilterAfter(new AuthorizationRequestGuard(clients, accounts, mfa), SessionEpochFilter.class);
+        http.requestCache(cache->cache.requestCache(new org.springframework.security.web.savedrequest.NullRequestCache()));
+        http.addFilterBefore(origins.filter(true),org.springframework.security.web.csrf.CsrfFilter.class);
+        http.addFilterAfter(new SessionEpochFilter(accounts, clock,sessions,continuations), SecurityContextHolderFilter.class);
+        http.addFilterAfter(new AuthorizationRequestGuard(clients, accounts, mfa,continuations), SessionEpochFilter.class);
         http.addFilterAfter(new TokenTransactionFilter(tx), AuthorizationRequestGuard.class);
         return http.build();
     }
@@ -126,12 +128,21 @@ public class SecurityConfiguration {
                 .csrf(csrf -> csrf.disable()).oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(api)));
         return http.build();
     }
-    @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http, DirectoryAuthenticationProvider provider, AccountState accounts, Clock clock, LogoutService logoutService,LoginSessions sessions) throws Exception {
+    @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http, DirectoryAuthenticationProvider provider, AccountState accounts, Clock clock, LogoutService logoutService,LoginSessions sessions,PortalContinuations continuations,BrowserOriginPolicy origins) throws Exception {
         http.authenticationProvider(provider).authorizeHttpRequests(auth -> auth.requestMatchers("/login", "/error", "/api/public/csrf", "/api/password/reset/**",
+                        "/","/reset","/portal/","/portal/mfa","/portal/password","/portal/factors","/portal/sessions","/portal/binding","/portal/assets/**",
                         "/api/connector/feishu/login/start","/api/connector/feishu/callback").permitAll().anyRequest().authenticated())
-                .formLogin(Customizer.withDefaults()).logout(logout -> logout.addLogoutHandler((request,response,authentication) -> logoutService.browser(authentication)));
-        http.headers(headers -> headers.referrerPolicy(policy -> policy.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER)));
-        http.addFilterAfter(new SessionEpochFilter(accounts, clock,sessions), SecurityContextHolderFilter.class);
+                .requestCache(cache->cache.requestCache(new org.springframework.security.web.savedrequest.NullRequestCache()))
+                .exceptionHandling(errors->errors.defaultAuthenticationEntryPointFor((request,response,error)->{
+                    response.setStatus(401);response.setContentType("application/json");response.getWriter().write("{\"error\":\"AUTHENTICATION_REQUIRED\"}");
+                },request->request.getServletPath().startsWith("/api/")))
+                .formLogin(login->login.loginPage("/login").failureUrl("/login?error").successHandler((request,response,authentication)->
+                    response.sendRedirect(continuations.afterLogin(request,(IdentityPrincipal)authentication.getPrincipal()))))
+                .logout(logout -> logout.logoutSuccessUrl("/login?logout").addLogoutHandler((request,response,authentication) -> logoutService.browser(authentication)));
+        http.headers(headers -> headers.referrerPolicy(policy -> policy.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.SAME_ORIGIN)));
+        http.headers(headers->headers.contentSecurityPolicy(policy->policy.policyDirectives("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")));
+        http.addFilterBefore(origins.filter(false),org.springframework.security.web.csrf.CsrfFilter.class);
+        http.addFilterAfter(new SessionEpochFilter(accounts, clock,sessions,continuations), SecurityContextHolderFilter.class);
         return http.build();
     }
 }

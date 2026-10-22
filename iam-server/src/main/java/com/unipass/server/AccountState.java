@@ -78,9 +78,16 @@ public class AccountState {
         jdbc.update("INSERT INTO auth_audit(id,user_id,action,trace_id,login_id) VALUES (?,?,?,?,?)", UUID.randomUUID(), user, action, UUID.randomUUID(),login);
     }
     public boolean recoveryStatusAllowed(IdentityPrincipal principal, String operationId) {
+        return recoveryStatusAllowed(principal,operationId,false);
+    }
+    public boolean recoveryRequestStatusAllowed(IdentityPrincipal principal,String key){
+        return recoveryStatusAllowed(principal,key,true);
+    }
+    private boolean recoveryStatusAllowed(IdentityPrincipal principal,String value,boolean requestKey){
         if(!loginAllowed(principal.getUserId(),principal.getEpoch(),principal.getLoginId()))return false;
         var observed=security.current();
-        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM password_operation p JOIN iam_user u ON u.id=p.user_id WHERE p.id=?::uuid AND u.id=? AND u.status='ACTIVE' AND u.auth_epoch=p.fenced_epoch AND p.fenced_epoch=? AND EXISTS(SELECT 1 FROM auth_runtime_state WHERE singleton AND redis_generation=?::uuid AND redis_run_id=?))",
-                Boolean.class, operationId, principal.getUserId(), principal.getEpoch() + 1,observed.generation(),observed.runId()));
+        String selector=requestKey?"p.idempotency_key=?":"p.id=?::uuid";
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM password_operation p JOIN iam_user u ON u.id=p.user_id WHERE "+selector+" AND u.id=? AND u.status='ACTIVE' AND u.auth_epoch=p.fenced_epoch AND p.fenced_epoch=? AND EXISTS(SELECT 1 FROM auth_runtime_state WHERE singleton AND redis_generation=?::uuid AND redis_run_id=?))",
+                Boolean.class, value, principal.getUserId(), principal.getEpoch() + 1,observed.generation(),observed.runId()));
     }
 }

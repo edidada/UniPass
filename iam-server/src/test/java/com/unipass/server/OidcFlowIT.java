@@ -132,6 +132,7 @@ class OidcFlowIT {
     private HttpResponse<String> post(HttpClient client,String path,Map<String,String> form,String clientId) throws Exception {
         String body=form.entrySet().stream().map(e->enc(e.getKey())+"="+enc(e.getValue())).collect(java.util.stream.Collectors.joining("&"));
         var request=HttpRequest.newBuilder(uri(path)).header("Content-Type","application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString(body));
+        if(clientId==null)request.header("Origin",ISSUER);
         if(clientId!=null && !clientId.equals("native")) request.header("Authorization","Basic "+Base64.getEncoder().encodeToString((clientId+":"+SECRET+"-"+clientId).getBytes(StandardCharsets.UTF_8)));
         return client.send(request.build(),HttpResponse.BodyHandlers.ofString());
     }
@@ -154,8 +155,8 @@ class OidcFlowIT {
         login(client,"E001");
     }
     private void login(HttpClient client,String employee) throws Exception {
-        var page=get(client,"/login");Matcher csrf=Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]+)\"").matcher(page.body());assertTrue(csrf.find(),page.body());
-        var response=post(client,"/login",Map.of("username",employee,"password",directory.password,"_csrf",csrf.group(1)),null);assertEquals(302,response.statusCode(),response.body());
+        var proof=get(client,"/api/public/csrf");assertEquals(200,proof.statusCode(),proof.body());var csrf=json.readTree(proof.body());
+        var response=post(client,"/login",Map.of("username",employee,"password",directory.password,csrf.get("parameter_name").asText(),csrf.get("token").asText()),null);assertEquals(302,response.statusCode(),response.body());
     }
     private HttpResponse<String> postJson(HttpClient client,String path,Object value) throws Exception {
         var csrfResponse=get(client,"/api/session/csrf");assertEquals(200,csrfResponse.statusCode(),csrfResponse.body());
@@ -595,6 +596,93 @@ class OidcFlowIT {
     private HttpResponse<String> api(String token) throws Exception {
         return browser().send(HttpRequest.newBuilder(uri("/api/resource/me")).header("Authorization","Bearer "+token).GET().build(),HttpResponse.BodyHandlers.ofString());
     }
+    private HttpResponse<String> html(HttpClient client,String path)throws Exception{
+        return client.send(HttpRequest.newBuilder(uri(path)).header("Accept","text/html").GET().build(),HttpResponse.BodyHandlers.ofString());
+    }
+    private HttpResponse<String> signIn(HttpClient client,String employee)throws Exception{
+        var csrf=json.readTree(get(client,"/api/public/csrf").body());
+        return post(client,"/login",Map.of("username",employee,"password",directory.password,csrf.get("parameter_name").asText(),csrf.get("token").asText()),null);
+    }
+    private UUID continuationId(HttpResponse<String> response){
+        assertEquals(302,response.statusCode(),response.body());String location=response.headers().firstValue("Location").orElseThrow();
+        return UUID.fromString(FeishuFixture.parameters(URI.create(location).getRawQuery()).get("continue"));
+    }
+    private HttpResponse<String> continueFlow(HttpClient client,UUID id)throws Exception{
+        var csrf=json.readTree(get(client,"/api/public/csrf").body());
+        return post(client,"/portal/continue",Map.of("id",id.toString(),"return_to","https://evil.example",csrf.get("parameter_name").asText(),csrf.get("token").asText()),null);
+    }
+    @Test void portalShellIsPublicAndContainsOnlyLocalAssetsWithNoStoreAndCsp()throws Exception{
+        for(String path:List.of("/login","/reset","/portal/","/portal/password","/portal/mfa","/portal/factors","/portal/sessions","/portal/binding")){
+            var page=html(browser(),path);assertEquals(200,page.statusCode(),page.body());
+            assertTrue(page.headers().firstValue("Content-Type").orElse("").contains("text/html"));
+            assertTrue(page.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
+            assertEquals("same-origin",page.headers().firstValue("Referrer-Policy").orElseThrow());
+            assertTrue(page.headers().firstValue("Content-Security-Policy").orElse("").contains("form-action 'self'"));
+            assertTrue(page.body().contains("/portal/assets/"));assertFalse(page.body().contains("cdn."));
+        }
+        var root=get(browser(),"/");assertEquals(302,root.statusCode());assertTrue(root.headers().firstValue("Location").orElseThrow().endsWith("/portal/"));
+        assertEquals(401,get(browser(),"/api/session/me").statusCode());
+        // Assets must actually resolve from the packaged classpath, not only be referenced.
+        var shell=html(browser(),"/portal/");var asset=Pattern.compile("(?:href|src)=\"(/portal/assets/[^\"]+)\"").matcher(shell.body());
+        assertTrue(asset.find(),"no local asset referenced: "+shell.body());
+        var contents=browser().send(HttpRequest.newBuilder(uri(asset.group(1))).GET().build(),HttpResponse.BodyHandlers.ofString());
+        assertEquals(200,contents.statusCode(),asset.group(1));
+        assertTrue(contents.headers().firstValue("Content-Type").orElse("").matches("(?:application/.*javascript|text/css).*"),contents.headers().firstValue("Content-Type").orElse(""));
+        assertEquals(404,html(browser(),"/portal/assets/missing-never-built.js").statusCode());
+    }
+    @Test void everyBrowserWriteRejectsMissingForeignNullOrRepeatedOriginBeforeMutation()throws Exception{
+        var client=browser();var csrf=json.readTree(get(client,"/api/public/csrf").body());
+        for(String origin:List.of("", "null", "https://evil.example", ISSUER+"/")){
+            var request=HttpRequest.newBuilder(uri("/login")).header("Content-Type","application/x-www-form-urlencoded");
+            if(!origin.isEmpty())request.header("Origin",origin);
+            var response=client.send(request.POST(HttpRequest.BodyPublishers.ofString("username=E001&password="+enc(OLD)+"&_csrf="+enc(csrf.get("token").asText()))).build(),HttpResponse.BodyHandlers.ofString());
+            assertEquals(403,response.statusCode(),response.body());
+        }
+        var duplicated=HttpRequest.newBuilder(uri("/api/password/reset/request")).header("Origin",ISSUER).header("Origin",ISSUER).header(csrf.get("header_name").asText(),csrf.get("token").asText()).header("Content-Type","application/json");
+        assertEquals(403,client.send(duplicated.POST(HttpRequest.BodyPublishers.ofString("{\"employee_no\":\"E001\"}")).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM iam_login",Integer.class));assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM reset_mail_request",Integer.class));
+        assertEquals(302,signIn(client,"E001").statusCode());
+    }
+    @Test void htmlMfaContinuationSurvivesSidRotationAndCannotOverrideOrReplayItsTarget()throws Exception{
+        byte[] secret=seedFactor();var client=browser();login(client);
+        var blocked=html(client,authorize("web","v".repeat(64)));UUID id=continuationId(blocked);
+        assertTrue(blocked.headers().firstValue("Location").orElseThrow().contains("/portal/mfa"));
+        stepUp(client,secret,Instant.now());var resumed=continueFlow(client,id);assertEquals(302,resumed.statusCode(),resumed.body());
+        String target=resumed.headers().firstValue("Location").orElseThrow();assertTrue(target.startsWith("/oauth/authorize?") || target.startsWith("http://localhost:"+port+"/oauth/authorize?"),target);assertFalse(target.contains("evil.example"));
+        assertEquals(400,continueFlow(client,id).statusCode());
+        var authorized=html(client,URI.create(target).getRawPath()+"?"+URI.create(target).getRawQuery());assertEquals(302,authorized.statusCode(),authorized.body());assertTrue(authorized.headers().firstValue("Location").orElseThrow().startsWith(CALLBACK));
+    }
+    @Test void passwordCompletionPreservesOnlyValidatedContinuationAcrossAnonymousSessionReplacement()throws Exception{
+        var client=browser();login(client);jdbc.update("UPDATE iam_user SET must_change_password=true WHERE id=?",user);
+        var blocked=html(client,authorize("web","v".repeat(64)));UUID id=continuationId(blocked);assertTrue(blocked.headers().firstValue("Location").orElseThrow().contains("/portal/password"));
+        String key=UUID.randomUUID().toString();var changed=recoveryJson(client,"/api/password/change",Map.of("old_password",OLD,"new_password",NEW,"confirm_password",NEW),key);assertEquals(200,changed.statusCode(),changed.body());
+        var status=get(client,"/api/password/requests/"+key+"/operation");assertEquals(200,status.statusCode(),status.body());assertEquals(json.readTree(changed.body()).get("id"),json.readTree(status.body()).get("id"));
+        assertEquals(200,html(client,"/login?continue="+id).statusCode());assertEquals(401,get(client,"/api/session/me").statusCode());
+        var fresh=signIn(client,"E001");assertEquals(302,fresh.statusCode(),fresh.body());String target=fresh.headers().firstValue("Location").orElseThrow();assertTrue(target.contains("/oauth/authorize?"),target);
+        var me=json.readTree(get(client,"/api/session/me").body());assertEquals(1,me.get("auth_epoch").asInt());assertTrue(me.get("password_recent").asBoolean());
+        assertEquals(302,html(client,URI.create(target).getRawPath()+"?"+URI.create(target).getRawQuery()).statusCode());
+        assertEquals(400,continueFlow(client,id).statusCode());
+    }
+    @Test void recoveryRequestLookupIsReadOnlyAndBoundToTheBrowserThatVerifiedEmail()throws Exception{
+        contact();String proof=emailProof();var owner=browser();var verified=recoveryJson(owner,"/api/password/reset/verify",Map.of("token",proof),null);assertEquals(200,verified.statusCode(),verified.body());
+        String key=UUID.randomUUID().toString();var changed=recoveryJson(owner,"/api/password/reset/confirm",Map.of("reset_token",json.readTree(verified.body()).get("reset_token").asText(),"new_password",NEW,"confirm_password",NEW),key);assertEquals(200,changed.statusCode(),changed.body());
+        String path="/api/password/reset/requests/"+key+"/operation";
+        assertEquals(200,get(owner,path).statusCode());assertEquals(404,get(browser(),path).statusCode());assertEquals(200,get(owner,path).statusCode());
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM password_operation",Integer.class));assertEquals(NEW,directory.password);
+    }
+    @Test void pendingAuthorizationCannotBeContinuedByADifferentFreshIdentity()throws Exception{
+        target();var owner=browser();login(owner);jdbc.update("UPDATE iam_user SET must_change_password=true WHERE id=?",user);
+        UUID id=continuationId(html(owner,authorize("web","v".repeat(64))));
+        var switched=signIn(owner,"E002");assertEquals(302,switched.statusCode(),switched.body());assertTrue(switched.headers().firstValue("Location").orElseThrow().endsWith("/portal/"));
+        assertEquals(400,continueFlow(owner,id).statusCode());assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM oauth2_authorization",Integer.class));
+    }
+    @Test void readOnlyRequestLookupDoesNotExposeAnotherIdentityOrAcceptARevokedLogin()throws Exception{
+        UUID other=target();var owner=browser();login(owner);String key=UUID.randomUUID().toString();
+        var changed=recoveryJson(owner,"/api/password/change",Map.of("old_password",OLD,"new_password",NEW,"confirm_password",NEW),key);assertEquals(200,changed.statusCode(),changed.body());
+        var foreign=browser();login(foreign,"E002");assertEquals(404,get(foreign,"/api/password/requests/"+key+"/operation").statusCode());
+        jdbc.update("UPDATE iam_login SET revoked_at=now() WHERE user_id=?",user);assertEquals(401,get(owner,"/api/password/requests/"+key+"/operation").statusCode());
+        assertEquals(200,get(foreign,"/api/session/me").statusCode());assertEquals(other.toString(),json.readTree(get(foreign,"/api/session/me").body()).get("sub").asText());
+    }
     @Test void discoveryAndJwksArePublicAndPrivateKeyNeverLeavesServer() throws Exception {
         var discovery=get(browser(),"/.well-known/openid-configuration"); assertEquals(200,discovery.statusCode(),discovery.body());
         assertEquals(ISSUER,json.readTree(discovery.body()).get("issuer").asText());
@@ -813,7 +901,7 @@ class OidcFlowIT {
     @Test void passwordChangeRequiresCsrfAndRejectsOldJwtAndSession() throws Exception {
         HttpClient browser=browser(); var token=tokens(browser,"web"); JsonNode csrf=json.readTree(get(browser,"/api/session/csrf").body());
         String body="{\"old_password\":\""+OLD+"\",\"new_password\":\""+NEW+"\",\"confirm_password\":\""+NEW+"\"}";
-        var request=HttpRequest.newBuilder(uri("/api/password/change")).header("Content-Type","application/json").header("Idempotency-Key",UUID.randomUUID().toString());
+        var request=HttpRequest.newBuilder(uri("/api/password/change")).header("Content-Type","application/json").header("Origin",ISSUER).header("Idempotency-Key",UUID.randomUUID().toString());
         assertEquals(403,browser.send(request.POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString()).statusCode());
         var changed=browser.send(request.header(csrf.get("header_name").asText(),csrf.get("token").asText()).POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());
         assertEquals(200,changed.statusCode(),changed.body()); var op=json.readTree(changed.body());

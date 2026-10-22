@@ -52,3 +52,8 @@ build
 ._*
 .Spotlight-V100/
 .Trashes/
+
+# Frontend and local browser evidence
+**/node_modules/
+/output/
+/.playwright-cli/

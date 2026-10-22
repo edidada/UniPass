@@ -22,7 +22,7 @@ public class EmailRecoveryController {
         @JsonProperty("confirm_password") @NotNull @Size(min=1,max=1024) public char[] confirmation;
         @Override public String toString(){return "Confirmation[REDACTED]";}
     }
-    @GetMapping("/api/public/csrf") Map<String,String> csrf(CsrfToken token){return Map.of("header_name",token.getHeaderName(),"token",token.getToken());}
+    @GetMapping("/api/public/csrf") Map<String,String> csrf(CsrfToken token){return Map.of("header_name",token.getHeaderName(),"parameter_name",token.getParameterName(),"token",token.getToken());}
     @PostMapping("/api/password/reset/request") ResponseEntity<Map<String,String>> request(@Valid @RequestBody Request input,HttpServletRequest request){
         recovery.request(input.employee(),request.getRemoteAddr());
         return ResponseEntity.accepted().body(Map.of("status","accepted"));
@@ -35,4 +35,5 @@ public class EmailRecoveryController {
         return ResponseEntity.status(result.state()==PasswordOperation.State.UNKNOWN || result.state()==PasswordOperation.State.PREPARED?202:200).body(result);
     }
     @GetMapping("/api/password/reset/operations/{id}") PasswordOperation status(@PathVariable("id") UUID id,HttpSession session){return recovery.status(id,session.getId());}
+    @GetMapping("/api/password/reset/requests/{key}/operation") PasswordOperation requestStatus(@PathVariable UUID key,HttpSession session){return recovery.requestStatus(key,session.getId());}
 }

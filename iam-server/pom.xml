@@ -4,6 +4,7 @@
   <artifactId>iam-server</artifactId>
   <dependencyManagement><dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-dependencies</artifactId><version>3.5.16</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>
   <dependencies>
+    <dependency><groupId>com.unipass</groupId><artifactId>iam-portal</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.eatthepath</groupId><artifactId>java-otp</artifactId><version>1.0.0</version></dependency>
     <dependency><groupId>commons-codec</groupId><artifactId>commons-codec</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-mail</artifactId></dependency>
