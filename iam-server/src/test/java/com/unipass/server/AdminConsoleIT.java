@@ -95,6 +95,33 @@ class AdminConsoleIT {
         assertTrue(auditActions().isEmpty());
     }
 
+    @Test void auditorReadsTheTrailButNeverManagesRoles() {
+        UUID auditorId = new UUID(0, 7);
+        Mockito.when(accounts.roles(auditorId)).thenReturn(List.of(AdminAuthorities.AUDITOR));
+        IdentityPrincipal auditor = new IdentityPrincipal(auditorId, 5, Instant.now(), List.of(AdminAuthorities.AUDITOR),
+                null, IdentityPrincipal.Method.PASSWORD, Instant.now(), UUID.randomUUID());
+        // Audit reading is allowed for AUDITOR alone; role mutation is not.
+        console.requireAuditReader(auditor);
+        assertEquals(403, rejected(() -> console.requireConsole(auditor)).getStatusCode().value());
+        assertEquals(403, rejected(() -> console.change(auditor, TARGET, "GRANT", "ROLE_ADMIN_PASSWORD_RESET", "审计员越界", "auditor-key-00001")).getStatusCode().value());
+        assertEquals(0, actions("GRANT"));
+        Mockito.when(accounts.roles(auditorId)).thenReturn(List.of());
+    }
+
+    @Test void inTransactionRoleRevocationAbortsThePendingWrite() {
+        // The pre-transaction guard still sees the operator role, but the in-transaction
+        // recheck under the actor row lock observes a concurrent revocation: the write
+        // (and its audit) must be refused with no partial state.
+        Mockito.when(accounts.roles(OPERATOR)).thenReturn(List.of("ROLE_SYSTEM_ADMIN"), List.of("ROLE_USER"));
+        assertEquals(403, rejected(() -> console.change(operator(), TARGET, "GRANT",
+                "ROLE_ADMIN_PASSWORD_RESET", "事务内撤销竞态", "toctou-unit-key1")).getStatusCode().value());
+        assertEquals(0, roles(TARGET, "ROLE_ADMIN_PASSWORD_RESET"));
+        assertEquals(0, actions("GRANT"));
+        assertTrue(auditActions().isEmpty());
+        Mockito.when(accounts.roles(OPERATOR)).thenReturn(List.of("ROLE_SYSTEM_ADMIN"));
+        Mockito.when(accounts.roles(NON_ADMIN)).thenReturn(List.of("ROLE_USER"));
+    }
+
     @Test void grantWritesRoleActionAndAuditTogetherWithAllowlistedDetail() {
         console.change(operator(), TARGET, "GRANT", "ROLE_ADMIN_PASSWORD_RESET", "客服工单确认", "grant-unit-key-0001");
         assertEquals(1, roles(TARGET, "ROLE_ADMIN_PASSWORD_RESET"));
@@ -107,8 +134,8 @@ class AdminConsoleIT {
         assertEquals(OPERATOR.toString(), audit.get("actor"));
         assertEquals(true, audit.get("has_op"));
         // Unknown detail keys never reach the store.
-        assertEquals(Set.of("role", "reason", "login", "target_action", "replay", "operator"),
-                new HashSet<>(List.of(AdminAuditService.DETAIL_KEYS.toArray(new String[0]))));
+        assertEquals(Set.of("role", "reason", "login", "target_action", "replay", "operator",
+                "client", "key_id", "overlap", "state"), new HashSet<>(List.of(AdminAuditService.DETAIL_KEYS.toArray(new String[0]))));
     }
 
     @Test void sameKeyWithContextReplayDoesNotDuplicateAuditOrRoles() {

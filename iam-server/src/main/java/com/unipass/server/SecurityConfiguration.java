@@ -33,6 +33,9 @@ public class SecurityConfiguration {
         return new org.springframework.session.security.SpringSessionBackedSessionRegistry<>(sessions);
     }
     @Bean RegisteredClientRepository clients(JdbcTemplate jdbc) { return new JdbcRegisteredClientRepository(jdbc); }
+    @Bean ClientRegistrationService registrations(RegisteredClientRepository clients, Environment env) {
+        return new ClientRegistrationService(clients, env.getProperty("unipass.local-http", Boolean.class, false));
+    }
     @Bean OAuth2AuthorizationConsentService consents(JdbcTemplate jdbc, RegisteredClientRepository clients) { return new JdbcOAuth2AuthorizationConsentService(jdbc, clients); }
     @Bean DigestAuthorizationService authorizations(JdbcTemplate jdbc, RegisteredClientRepository clients, AccountState accounts, TransactionTemplate tx) {
         return new DigestAuthorizationService(jdbc, clients, accounts, tx);
@@ -70,9 +73,9 @@ public class SecurityConfiguration {
             }
         };
     }
-    @Bean OAuth2TokenGenerator<?> tokenGenerator(JWKSource<SecurityContext> keys, OAuth2TokenCustomizer<JwtEncodingContext> claims, RegisteredClientRepository clients, Clock clock) {
+    @Bean OAuth2TokenGenerator<?> tokenGenerator(JWKSource<SecurityContext> keys, OAuth2TokenCustomizer<JwtEncodingContext> claims, RegisteredClientRepository clients, Clock clock, JdbcTemplate jdbc) {
         JwtGenerator jwt = new JwtGenerator(new NimbusJwtEncoder(keys)); jwt.setJwtCustomizer(claims);
-        return new DelegatingOAuth2TokenGenerator(jwt, new OAuth2AccessTokenGenerator(), new NativeRefreshSupport(clients, clock));
+        return new DelegatingOAuth2TokenGenerator(jwt, new OAuth2AccessTokenGenerator(), new NativeRefreshSupport(clients, clock, new ClientStateGuard(jdbc)));
     }
     @Bean JwtDecoder decoder(JWKSource<SecurityContext> keys, AuthorizationServerSettings settings, AccountState accounts, JdbcTemplate jdbc) {
         var processor = new com.nimbusds.jwt.proc.DefaultJWTProcessor<SecurityContext>();
@@ -94,9 +97,9 @@ public class SecurityConfiguration {
         };
     }
     @Bean @Order(1) SecurityFilterChain protocol(HttpSecurity http, DirectoryAuthenticationProvider provider, DigestAuthorizationService authorizations,
-            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa,LoginSessions sessions,PortalContinuations continuations,BrowserOriginPolicy origins) throws Exception {
+            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa,LoginSessions sessions,PortalContinuations continuations,BrowserOriginPolicy origins,JdbcTemplate jdbc) throws Exception {
         var server = OAuth2AuthorizationServerConfigurer.authorizationServer();
-        NativeRefreshSupport nativeClients = new NativeRefreshSupport(clients, clock);
+        NativeRefreshSupport nativeClients = new NativeRefreshSupport(clients, clock, new ClientStateGuard(jdbc));
         var logoutSuccess = new org.springframework.security.oauth2.server.authorization.oidc.web.authentication.OidcLogoutAuthenticationSuccessHandler();
         http.securityMatcher(server.getEndpointsMatcher())
                 .with(server, as -> as.authorizationService(authorizations).oidc(oidc -> oidc.providerConfigurationEndpoint(config -> config.providerConfigurationCustomizer(metadata -> metadata.claim("backchannel_logout_supported",true).claim("backchannel_logout_session_supported",true))).userInfoEndpoint(userinfo -> userinfo.errorResponseHandler((request,response,error) -> {
@@ -106,7 +109,8 @@ public class SecurityConfiguration {
                             catch (RuntimeException e) { response.setStatus(503); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"temporarily_unavailable\"}"); return; }
                             logoutSuccess.onAuthenticationSuccess(request,response,authentication);
                         }).errorResponseHandler((request,response,error) -> { response.setStatus(400); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"invalid_request\"}"); })))
-                        .clientAuthentication(client -> client.authenticationConverter(nativeClients).authenticationProvider(nativeClients)))
+                        .clientAuthentication(client -> client.authenticationConverter(nativeClients).authenticationProvider(nativeClients)
+                                .authenticationProvider(new DualSecretClientAuthentication(clients, authorizations, jdbc, clock))))
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login")))
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()));
@@ -130,7 +134,7 @@ public class SecurityConfiguration {
     }
     @Bean @Order(3) SecurityFilterChain browser(HttpSecurity http, DirectoryAuthenticationProvider provider, AccountState accounts, Clock clock, LogoutService logoutService,LoginSessions sessions,PortalContinuations continuations,BrowserOriginPolicy origins) throws Exception {
         http.authenticationProvider(provider).authorizeHttpRequests(auth -> auth.requestMatchers("/login", "/error", "/api/public/csrf", "/api/password/reset/**",
-                        "/","/reset","/portal/","/portal/mfa","/portal/password","/portal/factors","/portal/sessions","/portal/binding","/portal/assets/**",
+                        "/","/reset","/portal/","/portal/mfa","/portal/password","/portal/factors","/portal/sessions","/portal/binding","/portal/admin","/portal/apps","/portal/assets/**",
                         "/api/connector/feishu/login/start","/api/connector/feishu/callback").permitAll().anyRequest().authenticated())
                 .requestCache(cache->cache.requestCache(new org.springframework.security.web.savedrequest.NullRequestCache()))
                 .exceptionHandling(errors->errors.defaultAuthenticationEntryPointFor((request,response,error)->{

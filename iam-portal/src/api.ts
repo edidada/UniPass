@@ -8,8 +8,15 @@ export interface LoginEntry { id: string; authenticatedAt: string; lastAccessAt:
 export interface LoginPage { entries: LoginEntry[]; nextCursor: string | null }
 export interface AdminAuditEntry { id: string; createdAt: string; subject: string | null; action: string; result: string; clientId: string | null; operationId: string | null; detail: Record<string, string> }
 export interface AdminAuditPage { entries: AdminAuditEntry[]; nextCursor: string | null }
+export interface AdminClientSummary { id: string; clientId: string; name: string; kind: string | null; owner: string | null; enabled: boolean; confidential: boolean; issuedAt: string | null }
+export interface AdminClientDetail extends AdminClientSummary { redirectUris: string[]; postLogoutRedirectUris: string[]; scopes: string[]; backchannelUri: string; secretKeyId: string | null; previousSecretKeyId: string | null; overlapUntil: string | null }
+export interface AdminClientListPage { entries: AdminClientSummary[]; nextCursor: string | null }
+export interface AdminIssuedSecret { registeredId: string; clientId: string; secretKeyId: string; secret: string | null; replay: boolean; overlapUntil: string | null; guidance: string }
+export interface AdminClientReview { clientId: string; enabled: boolean; replay: boolean }
 
 export const isUuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value)
+/** Client identifier contract mirrored from the server: bounded URL-safe characters. */
+export const isClientId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_.-]{3,100}$/.test(value)
 export class ApiFailure extends Error {
   constructor(readonly status: number, readonly code = '', readonly operationId?: string) { super('Request failed') }
 }
@@ -64,6 +71,7 @@ export function message(error: unknown): string {  if (!(error instanceof ApiFai
     RECENT_AUTH_REQUIRED: '请先重新验证当前密码。',
     RATE_LIMITED: '操作过于频繁，请稍后再试。',
     DIRECTORY_POLICY_NOT_VERIFIED: '此密码操作尚未开放，请联系管理员。',
+    SECRET_ALREADY_SHOWN: '该密钥只展示一次；如已丢失，请使用新的幂等键重新轮换。',
   }
   if (known[error.code]) return known[error.code]
   if (error.status === 401) return '登录或验证已失效，请重新登录。'

@@ -44,6 +44,12 @@ public final class DigestAuthorizationService implements OAuth2AuthorizationServ
             IdentityPrincipal principal = principal(authorization);
             try { accounts.lockAndRequire(principal); }
             catch (org.springframework.security.authentication.BadCredentialsException e) { throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT); }
+            // T8 fence: lock the registration row and refuse issuing into a client
+            // disabled concurrently, so authorize codes and refresh/access grants
+            // can never outlive the disable transaction.
+            Boolean clientEnabled = jdbc.query("SELECT enabled FROM oauth2_registered_client WHERE id=? FOR UPDATE",
+                    r -> r.next() ? r.getBoolean(1) : null, authorization.getRegisteredClientId());
+            if (!Boolean.TRUE.equals(clientEnabled)) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             boolean revoked = Boolean.TRUE.equals(jdbc.query("SELECT revoked FROM oauth2_authorization WHERE id=? FOR UPDATE",
                     r -> r.next() && r.getBoolean(1), authorization.getId()));
             if (revoked) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
@@ -103,6 +109,10 @@ public final class DigestAuthorizationService implements OAuth2AuthorizationServ
             authorization = delegate.findById(id);
         } else if (!accounts.allowed(principal)) return null;
         if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id=?", Boolean.class, id))) return null;
+        // T8 fence: live client state so tokens of a client disabled after this
+        // request began never validate (revocation by disabling wins).
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && !Boolean.TRUE.equals(jdbc.queryForObject("SELECT enabled FROM oauth2_registered_client WHERE id=?", Boolean.class, authorization.getRegisteredClientId()))) return null;
         var clientAuth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         if (clientAuth instanceof org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientAuthenticationToken client
                 && client.getRegisteredClient() != null && !client.getRegisteredClient().getId().equals(authorization.getRegisteredClientId())) return null;

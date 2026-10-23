@@ -29,8 +29,23 @@ public final class AdminConsoleService {
     }
 
     public void requireConsole(IdentityPrincipal principal) {
-        if (!accounts.roles(principal.getUserId()).contains("ROLE_SYSTEM_ADMIN"))
+        requireRole(principal, AdminAuthorities.ROLE_WRITE);
+    }
+
+    /** AUDITOR readers can view/export the audit trail but never manage roles. */
+    public void requireAuditReader(IdentityPrincipal principal) {
+        requireRole(principal, AdminAuthorities.AUDIT_READ);
+    }
+
+    private void requireRole(IdentityPrincipal principal, java.util.Set<String> required) {
+        // Live check: the role must exist in iam_user_role right now, even if the
+        // login session captured it earlier before a concurrent revocation.
+        if (!AdminAuthorities.any(accounts.roles(principal.getUserId()), required))
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Console authority required");
+    }
+
+    List<String> liveRoles(UUID actor) {
+        return accounts.roles(actor);
     }
 
     public List<String> roles(UUID target) {
@@ -47,6 +62,11 @@ public final class AdminConsoleService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Reason required");
         tx.executeWithoutResult(status -> {
             accounts.lockAndRequire(principal);
+            // Closed TOCTOU: the console authority is re-checked under the actor
+            // row lock, so a revocation committed after the pre-transaction
+            // guard still rejects this write (no role-only pre-tx decision).
+            if (!AdminAuthorities.any(accounts.roles(principal.getUserId()), AdminAuthorities.ROLE_WRITE))
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Console authority required");
             if (!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM iam_user WHERE id=?)", Boolean.class, target)))
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Identity unavailable");
             UUID actionId = UUID.randomUUID();
@@ -81,6 +101,9 @@ public final class AdminConsoleService {
         });
     }
 
-    static final Set<String> ASSIGNABLE = Set.of("ROLE_SYSTEM_ADMIN", "ROLE_ADMIN_PASSWORD_RESET",
-            "ROLE_ADMIN_PASSWORD_RECOVERY", "ROLE_ADMIN_MFA_RECOVERY");
+    /** Independent authorities may be granted by console or offline CLI; password/MFA roles stay separate and never imply these. */
+    static final Set<String> ASSIGNABLE = Set.of(
+            AdminAuthorities.SYSTEM_ADMIN, AdminAuthorities.APP_ADMIN, AdminAuthorities.AUDITOR,
+            AdminAuthorities.USER_OPERATOR, "ROLE_ADMIN_PASSWORD_RESET", "ROLE_ADMIN_PASSWORD_RECOVERY",
+            "ROLE_ADMIN_MFA_RECOVERY");
 }

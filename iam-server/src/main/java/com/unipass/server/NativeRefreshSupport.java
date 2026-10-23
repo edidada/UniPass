@@ -17,7 +17,8 @@ import java.util.*;
 final class NativeRefreshSupport implements AuthenticationProvider, AuthenticationConverter, OAuth2TokenGenerator<OAuth2RefreshToken> {
     private final RegisteredClientRepository clients;
     private final Clock clock;
-    NativeRefreshSupport(RegisteredClientRepository clients, Clock clock) { this.clients = clients; this.clock = clock; }
+    private final ClientStateGuard state;
+    NativeRefreshSupport(RegisteredClientRepository clients, Clock clock, ClientStateGuard state) { this.clients = clients; this.clock = clock; this.state = state; }
     @Override public Authentication convert(HttpServletRequest request) {
         if (!"refresh_token".equals(request.getParameter("grant_type")) || request.getHeader("Authorization") != null
                 || request.getParameter("client_secret") != null || request.getParameter("client_assertion") != null) return null;
@@ -28,6 +29,7 @@ final class NativeRefreshSupport implements AuthenticationProvider, Authenticati
     @Override public Authentication authenticate(Authentication authentication) {
         OAuth2ClientAuthenticationToken token = (OAuth2ClientAuthenticationToken) authentication;
         if (!ClientAuthenticationMethod.NONE.equals(token.getClientAuthenticationMethod()) || !"refresh_token".equals(token.getAdditionalParameters().get("grant_type"))) return null;
+        state.requireEnabledRowLock(token.getPrincipal().toString());
         RegisteredClient client = clients.findByClientId(token.getPrincipal().toString());
         if (client == null || !client.getClientAuthenticationMethods().contains(ClientAuthenticationMethod.NONE)
                 || !Boolean.TRUE.equals(client.getClientSettings().getSetting("unipass.native"))
