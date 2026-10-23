@@ -61,6 +61,8 @@ class AdminConsoleIT {
                 INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version,auth_epoch)
                 VALUES (?,'admin-test',?,'OPENLDAP','uid=test','Test','ACTIVE','admin-test',1,5)
                 """, OPERATOR, UUID.randomUUID());
+        // The operator holds their console role durably, as in production.
+        jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,'ROLE_SYSTEM_ADMIN') ON CONFLICT DO NOTHING", OPERATOR);
         jdbc.update("""
                 INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version,auth_epoch)
                 VALUES (?,'admin-target',?,'OPENLDAP','uid=target','Target','ACTIVE','admin-test',1,5)
@@ -205,7 +207,7 @@ class AdminConsoleIT {
         // Replaying the old grant key stays idempotent; it must not resurrect a later-revoked role.
         console.change(operator(), TARGET, "GRANT", "ROLE_ADMIN_MFA_RECOVERY", "第一次授权", key);
         assertEquals(0, roles(TARGET, "ROLE_ADMIN_MFA_RECOVERY"));
-        assertEquals(1, actions("GRANT") + actions("REVOKE"));
+        assertEquals(2, actions("GRANT") + actions("REVOKE"));
     }
 
     @AfterAll void stop() throws Exception { if (pg != null) pg.close(); }
