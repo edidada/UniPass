@@ -66,7 +66,7 @@ describe('application management', () => {
   })
 
   it('rejects an invalid client identifier before any registration request', async () => {
-    const fetcher = vi.fn(async (path: string) => path === '/api/session/me' ? body(appAdmin) : body([]))
+    const fetcher = vi.fn(async (path: string, _init?: RequestInit) => path === '/api/session/me' ? body(appAdmin) : body([]))
     vi.stubGlobal('fetch', fetcher)
     const wrapper = attach(); await flushPromises()
     await wrapper.get('#client-id').setValue('../evil')
