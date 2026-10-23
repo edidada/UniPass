@@ -68,8 +68,9 @@ class AdminConsoleIT {
     }
 
     private IdentityPrincipal operator() {
-        return new IdentityPrincipal(OPERATOR, 5, Instant.now(), SYSTEM, null,
-                IdentityPrincipal.Method.PASSWORD, Instant.now(), UUID.randomUUID());
+        // Password proof is anchored to the injected test clock so the 300s "recent" window holds.
+        return new IdentityPrincipal(OPERATOR, 5, now.get(), SYSTEM, now.get(),
+                IdentityPrincipal.Method.PASSWORD, now.get(), UUID.randomUUID());
     }
     private int roles(UUID user, String role) {
         return jdbc.queryForObject("SELECT count(*) FROM iam_user_role WHERE user_id=? AND role=?", Integer.class, user, role);
@@ -191,7 +192,7 @@ class AdminConsoleIT {
             audit.record("ROLE_GRANTED", "SUCCESS", OPERATOR, TARGET, UUID.randomUUID(), null, UUID.randomUUID(),
                     Map.of("role", (i % 2 == 0) ? "ROLE_ADMIN_PASSWORD_RESET" : "ROLE_ADMIN_PASSWORD_RECOVERY"));
         List<String> lines = audit.export(10);
-        assertEquals(10, lines.size());
+        assertEquals(11, lines.size());
         assertEquals("created_at,user_id,action,result,client_id,operation_id,trace_id", lines.get(0));
         assertTrue(lines.get(1).contains("ROLE_GRANTED"));
     }
