@@ -72,8 +72,10 @@ public final class AdminConsoleService {
                 String stored = jdbc.query("""
                         SELECT reason FROM admin_console_action
                         WHERE actor_id=? AND target_id=? AND action=? AND detail=? AND idempotency_key=?
-                        """, r -> { if (!r.next()) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed"); return r.getString(1); },
-                        principal.getUserId(), target, action, role, key);
+                        """, (org.springframework.jdbc.core.ResultSetExtractor<String>) r -> {
+                    if (!r.next()) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
+                    return r.getString(1);
+                }, principal.getUserId(), target, action, role, key);
                 if (!reason.equals(stored)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
             }
         });

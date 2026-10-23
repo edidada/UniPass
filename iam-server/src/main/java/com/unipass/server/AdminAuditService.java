@@ -78,12 +78,14 @@ public final class AdminAuditService {
     public List<String> export(int cap) {
         List<String> lines = new ArrayList<>();
         lines.add("created_at,user_id,action,result,client_id,operation_id,trace_id");
-        jdbc.query("SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id FROM (SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id FROM auth_audit ORDER BY created_at DESC, id DESC LIMIT ?) e ORDER BY created_at, id",
+        org.springframework.jdbc.core.RowCallbackHandler writer =
                 r -> lines.add(String.join(",",
                         r.getString("created_at").replace(",", " "),
                         String.valueOf(r.getObject("user_id", UUID.class)),
                         cell(r.getString("action")), cell(r.getString("result")), cell(r.getString("client_id")),
-                        cell(r.getString("operation_id")), cell(r.getString("trace_id")))), cap);
+                        cell(r.getString("operation_id")), cell(r.getString("trace_id"))));
+        jdbc.query("SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id FROM (SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id FROM auth_audit ORDER BY created_at DESC, id DESC LIMIT ?) e ORDER BY created_at, id",
+                writer, cap);
         return lines;
     }
 
