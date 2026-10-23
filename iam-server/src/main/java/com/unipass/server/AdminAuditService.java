@@ -69,7 +69,7 @@ public final class AdminAuditService {
                 decoded.createdAt, decoded.createdAt, decoded.id, limit);
         if (rows.size() == limit && !rows.isEmpty()) {
             Entry last = rows.get(rows.size() - 1);
-            return new Page(rows, DecodedCursor.encode(new DecodedCursor(Timestamp.from(last.createdAt()).toString(), last.id().toString())));
+            return new Page(rows, DecodedCursor.encode(new DecodedCursor(last.createdAt().toString(), last.id().toString())));
         }
         return new Page(rows, null);
     }
@@ -91,7 +91,7 @@ public final class AdminAuditService {
 
     private static String cell(String value) {
         if (value == null) return "";
-        if (!value.matches("^[A-Za-z0-9@./:+ -]*$")) throw new IllegalStateException("Unsafe audit cell");
+        if (!value.matches("^[A-Za-z0-9@./_ -]*$")) throw new IllegalStateException("Unsafe audit cell");
         return value.replace(" ", "");
     }
 

@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class AdminConsoleIT {
     private static final UUID OPERATOR = new UUID(0, 1);
+    private static final UUID NON_ADMIN = new UUID(0, 4);
     private static final UUID TARGET = new UUID(0, 2);
     private static final List<String> SYSTEM = List.of("ROLE_SYSTEM_ADMIN");
     private EmbeddedPostgres pg;
@@ -29,6 +30,7 @@ class AdminConsoleIT {
     private TransactionTemplate tx;
     private AdminAuditService audit;
     private AdminConsoleService console;
+    private AccountState accounts;
     private final AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-10-23T00:00:00Z"));
 
     @BeforeAll void start() throws Exception {
@@ -44,9 +46,12 @@ class AdminConsoleIT {
             @Override public Instant instant() { return now.get(); }
         };
         audit = new AdminAuditService(jdbc, clock);
+        accounts = Mockito.mock(AccountState.class);
+        Mockito.when(accounts.roles(OPERATOR)).thenReturn(List.of("ROLE_SYSTEM_ADMIN"));
+        Mockito.when(accounts.roles(NON_ADMIN)).thenReturn(List.of("ROLE_USER"));
         MfaService mfa = Mockito.mock(MfaService.class);
         Mockito.when(mfa.recent(Mockito.any())).thenReturn(true);
-        console = new AdminConsoleService(jdbc, tx, Mockito.mock(AccountState.class), audit, mfa, clock);
+        console = new AdminConsoleService(jdbc, tx, accounts, audit, mfa, clock);
     }
     @BeforeEach void seed() {
         Flyway.configure().dataSource(jdbc.getDataSource()).cleanDisabled(false).load().clean();
@@ -81,7 +86,7 @@ class AdminConsoleIT {
     }
 
     @Test void nonAdministratorIsRejectedBeforeAnyWrite() {
-        IdentityPrincipal plain = new IdentityPrincipal(OPERATOR, 5, Instant.now(), List.of("ROLE_USER"), null,
+        IdentityPrincipal plain = new IdentityPrincipal(NON_ADMIN, 5, Instant.now(), List.of("ROLE_USER"), null,
                 IdentityPrincipal.Method.PASSWORD, Instant.now(), UUID.randomUUID());
         assertEquals(403, rejected(() -> console.requireConsole(plain)).getStatusCode().value());
         assertTrue(auditActions().isEmpty());
