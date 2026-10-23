@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { Component } from 'vue'
-import { get, logout, message } from './api'import LoginPage from './pages/LoginPage.vue'
+import { get, logout, message } from './api'
+import LoginPage from './pages/LoginPage.vue'
 import OverviewPage from './pages/OverviewPage.vue'
 import MfaPage from './pages/MfaPage.vue'
 import PasswordPage from './pages/PasswordPage.vue'
