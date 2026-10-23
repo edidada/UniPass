@@ -23,6 +23,9 @@ import java.util.*;
 @Configuration
 public class CoreConfiguration {
     @Bean Clock clock() { return Clock.systemUTC(); }
+    @Bean ClientRegistrationService clientRegistration(RegisteredClientRepository clients, Environment env) {
+        return new ClientRegistrationService(clients, env.getProperty("unipass.local-http", Boolean.class, false));
+    }
     @Bean TransactionTemplate transactions(PlatformTransactionManager manager) {
         TransactionTemplate tx = new TransactionTemplate(manager); tx.setTimeout(10); return tx;
     }

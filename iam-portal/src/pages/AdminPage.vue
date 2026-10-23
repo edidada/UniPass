@@ -4,7 +4,7 @@ import { assertCursor, get, isUuid, message, post } from '../api'
 import type { AdminAuditEntry, AdminAuditPage } from '../api'
 import { useAccount } from '../flow'
 
-const assignable: string[] = ['ROLE_SYSTEM_ADMIN', 'ROLE_ADMIN_PASSWORD_RESET', 'ROLE_ADMIN_PASSWORD_RECOVERY', 'ROLE_ADMIN_MFA_RECOVERY']
+const assignable: string[] = ['ROLE_SYSTEM_ADMIN', 'ROLE_ADMIN_APP', 'ROLE_ADMIN_PASSWORD_RESET', 'ROLE_ADMIN_PASSWORD_RECOVERY', 'ROLE_ADMIN_MFA_RECOVERY']
 const { identity, error: accountError } = useAccount()
 const audit = ref<AdminAuditEntry[]>([]); const cursor = ref<string | null>(null); const error = ref(''); const busy = ref(false)
 const target = ref(''); const roles = ref<string[]>([]); const role = ref<string>(assignable[0]!)

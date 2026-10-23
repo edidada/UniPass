@@ -107,7 +107,7 @@ class AdminConsoleIT {
         assertEquals(OPERATOR.toString(), audit.get("actor"));
         assertEquals(true, audit.get("has_op"));
         // Unknown detail keys never reach the store.
-        assertEquals(Set.of("role", "reason", "login", "target_action", "replay", "operator"),
+        assertEquals(Set.of("role", "reason", "login", "target_action", "replay", "operator", "client_id", "kind", "previous_secret_valid_until"),
                 new HashSet<>(List.of(AdminAuditService.DETAIL_KEYS.toArray(new String[0]))));
     }
 

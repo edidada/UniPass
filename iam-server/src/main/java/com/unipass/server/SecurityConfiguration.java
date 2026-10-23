@@ -94,9 +94,10 @@ public class SecurityConfiguration {
         };
     }
     @Bean @Order(1) SecurityFilterChain protocol(HttpSecurity http, DirectoryAuthenticationProvider provider, DigestAuthorizationService authorizations,
-            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa,LoginSessions sessions,PortalContinuations continuations,BrowserOriginPolicy origins) throws Exception {
+            RegisteredClientRepository clients, AccountState accounts, Clock clock, TransactionTemplate tx, LogoutService logoutService, MfaService mfa,LoginSessions sessions,PortalContinuations continuations,BrowserOriginPolicy origins,org.springframework.jdbc.core.JdbcTemplate jdbc) throws Exception {
         var server = OAuth2AuthorizationServerConfigurer.authorizationServer();
         NativeRefreshSupport nativeClients = new NativeRefreshSupport(clients, clock);
+        var previousSecrets = new PreviousClientSecretAuthenticationProvider(clients, jdbc, clock);
         var logoutSuccess = new org.springframework.security.oauth2.server.authorization.oidc.web.authentication.OidcLogoutAuthenticationSuccessHandler();
         http.securityMatcher(server.getEndpointsMatcher())
                 .with(server, as -> as.authorizationService(authorizations).oidc(oidc -> oidc.providerConfigurationEndpoint(config -> config.providerConfigurationCustomizer(metadata -> metadata.claim("backchannel_logout_supported",true).claim("backchannel_logout_session_supported",true))).userInfoEndpoint(userinfo -> userinfo.errorResponseHandler((request,response,error) -> {
@@ -106,7 +107,7 @@ public class SecurityConfiguration {
                             catch (RuntimeException e) { response.setStatus(503); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"temporarily_unavailable\"}"); return; }
                             logoutSuccess.onAuthenticationSuccess(request,response,authentication);
                         }).errorResponseHandler((request,response,error) -> { response.setStatus(400); response.setContentType("application/json"); response.getWriter().write("{\"error\":\"invalid_request\"}"); })))
-                        .clientAuthentication(client -> client.authenticationConverter(nativeClients).authenticationProvider(nativeClients)))
+                        .clientAuthentication(client -> client.authenticationConverter(nativeClients).authenticationProvider(nativeClients).authenticationProvider(previousSecrets)))
                 .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login")))
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()));

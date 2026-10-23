@@ -1594,6 +1594,110 @@
           }
         }
       }
+    },
+    "/api/admin/console/clients": {
+      "get": {
+        "operationId": "listManagedClients",
+        "description": "Registered OAuth clients for the application console. Requires ROLE_SYSTEM_ADMIN or ROLE_ADMIN_APP. Secrets are never returned; only public metadata is listed.",
+        "responses": {
+          "200": {
+            "description": "Registered clients",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ManagedClient"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      },
+      "post": {
+        "operationId": "registerManagedClient",
+        "description": "Registers an OAuth client. Confidential clients receive a generated 43-character secret in the response exactly once; only a delegated password hash is stored. Redirect/logout URIs and scopes follow the existing ClientRegistrationService contract (HTTPS, exact match, maximum ten URIs, openid required). The client row and the CLIENT_REGISTERED audit entry commit in one transaction.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientRegistrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Registered client with the one-time secret (null for public clients)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedClientSecret"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
+    "/api/admin/console/clients/{clientId}/rotate": {
+      "post": {
+        "operationId": "rotateClientSecret",
+        "description": "Rotates a confidential client's secret. The previous secret stays valid for unipass.clients.secret-rotation-window (default PT24H, 1 minute to 7 days) through a recorded hash, so rollout never locks the client out. The new secret is returned once. The same Idempotency-Key cannot issue two secrets (409). Rotation, previous-secret window and audit commit together. Public clients are rejected with 400.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{16,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientRotationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New secret and the previous secret's validity end",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedClientSecret"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2039,6 +2143,183 @@
             "minLength": 1,
             "maxLength": 500,
             "description": "Free-text business reason; ISO control characters are rejected."
+          }
+        }
+      },
+      "ManagedClient": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "clientId",
+          "name",
+          "kind",
+          "redirectUris",
+          "postLogoutRedirectUris",
+          "scopes",
+          "issuedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "clientId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "CONFIDENTIAL",
+              "NATIVE",
+              "SPA"
+            ]
+          },
+          "redirectUris": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          "postLogoutRedirectUris": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "issuedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ClientRegistrationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client_id",
+          "name",
+          "kind",
+          "redirect_uris",
+          "scopes",
+          "reason"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "CONFIDENTIAL",
+              "NATIVE",
+              "SPA"
+            ]
+          },
+          "redirect_uris": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "type": "string"
+            }
+          },
+          "post_logout_redirect_uris": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "openid",
+                "profile",
+                "email",
+                "api.read"
+              ]
+            }
+          },
+          "backchannel_logout_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Must use a registered callback origin and the fixed /logout/backchannel path."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      },
+      "ClientRotationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      },
+      "IssuedClientSecret": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "clientId",
+          "secret",
+          "previousSecretValidUntil"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "clientId": {
+            "type": "string"
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Returned once; never re-readable."
+          },
+          "previousSecretValidUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         }
       }
