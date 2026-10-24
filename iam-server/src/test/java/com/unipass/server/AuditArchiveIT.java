@@ -84,8 +84,9 @@ class AuditArchiveIT {
         assertEquals(2, batch.rows());
         assertEquals(64, batch.digest().length());
         assertEquals(2, archived());
-        assertEquals(1, live());
-        assertEquals(recent, jdbc.queryForObject("SELECT id FROM auth_audit", UUID.class));
+        // Live table keeps the recent row plus the AUDIT_ARCHIVED entry written by this operation.
+        assertEquals(2, live());
+        assertNotNull(jdbc.queryForObject("SELECT id FROM auth_audit WHERE id=?", UUID.class, recent));
         assertTrue(archives.verify(batch.id()).intact());
         assertEquals(1, archives.batches(10).size());
         Map<String, Object> entry = jdbc.queryForMap("SELECT detail->>'batch_id' AS batch_id, detail->>'rows' AS rows, source_ip FROM auth_audit WHERE action='AUDIT_ARCHIVED'");
@@ -100,7 +101,8 @@ class AuditArchiveIT {
         var batch = maintenance.archive(operator(), NOW.minus(Duration.ofDays(180)), 100, null);
         assertNotNull(batch);
         assertEquals(2, maintenance.restore(operator(), batch.id(), "198.51.100.7"));
-        assertEquals(2, live());
+        // Two restored rows plus the archival and restore audit entries.
+        assertEquals(4, live());
         assertEquals(0, maintenance.restore(operator(), batch.id(), null), "a repeated restore inserts nothing");
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='AUDIT_RESTORED'", Integer.class));
         // Tampering with an archived row is detected and blocks the restore.
