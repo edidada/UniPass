@@ -33,6 +33,7 @@ class ClientAdminIT {
     private RegisteredClientRepository clients;
     private ClientAdminService service;
     private PreviousClientSecretAuthenticationProvider previous;
+    private AccountState accounts;
     private final AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-10-24T00:00:00Z"));
     private final Duration overlap = Duration.ofHours(1);
 
@@ -52,7 +53,7 @@ class ClientAdminIT {
         Environment env = Mockito.mock(Environment.class);
         Mockito.when(env.getProperty("unipass.clients.secret-rotation-window", Duration.class, ClientAdminService.DEFAULT_OVERLAP))
                 .thenReturn(overlap);
-        AccountState accounts = Mockito.mock(AccountState.class);
+        accounts = Mockito.mock(AccountState.class);
         Mockito.when(accounts.roles(OPERATOR)).thenReturn(List.of("ROLE_SYSTEM_ADMIN"));
         Mockito.when(accounts.roles(APP_ADMIN)).thenReturn(List.of("ROLE_ADMIN_APP"));
         Mockito.when(accounts.roles(NON_ADMIN)).thenReturn(List.of("ROLE_USER"));
