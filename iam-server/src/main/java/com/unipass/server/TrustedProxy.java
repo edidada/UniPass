@@ -105,7 +105,7 @@ final class TrustedProxy {
         static Range parse(String value) {
             int slash = value.indexOf('/');
             String host = slash < 0 ? value : value.substring(0, slash);
-            byte[] address = parse(host);
+            byte[] address = TrustedProxy.parse(host);
             if (address == null) throw new IllegalArgumentException("Invalid trusted proxy address");
             int bits = address.length * 8;
             int prefix = bits;
