@@ -1452,72 +1452,68 @@
         }
       }
     },
-    "/api/admin/console/audit": [
-      {
-        "get": {
-          "operationId": "listConsoleAudit",
-          "description": "Management console audit query (T8): newest first, stable ties broken by id, opaque Base64url cursor covering created_at and id. Requires ROLE_SYSTEM_ADMIN. detail carries only the allowlisted keys role/reason/login/target_action/replay/operator; response never exposes source_ip.",
-          "parameters": [
-            {
-              "name": "cursor",
-              "in": "query",
-              "schema": {
-                "type": "string",
-                "pattern": "^[A-Za-z0-9_-]{16,512}$"
-              }
-            },
-            {
-              "name": "limit",
-              "in": "query",
-              "schema": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 50
-              }
+    "/api/admin/console/audit": {
+      "get": {
+        "operationId": "listConsoleAudit",
+        "description": "Management console audit query (T8): newest first, stable ties broken by id, opaque Base64url cursor covering created_at and id. Requires ROLE_SYSTEM_ADMIN or the read-only ROLE_ADMIN_AUDIT. detail carries only the allowlisted keys role/reason/login/target_action/replay/operator; response never exposes source_ip.",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{16,512}$"
             }
-          ],
-          "responses": {
-            "200": {
-              "description": "Page of console audit entries",
-              "content": {
-                "application/json": {
-                  "schema": {
-                    "$ref": "#/components/schemas/AdminAuditPage"
-                  }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of console audit entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAuditPage"
                 }
               }
-            },
-            "default": {
-              "$ref": "#/components/responses/Rejected"
             }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
           }
         }
       }
-    ],
-    "/api/admin/console/audit/export": [
-      {
-        "get": {
-          "operationId": "exportConsoleAudit",
-          "description": "Audit export as CSV, capped at 1000 rows, same ROLE_SYSTEM_ADMIN requirement. Trace/administrative fields only; columns are treated as static identifiers and cells are defensively filtered.",
-          "responses": {
-            "200": {
-              "description": "CSV, header line created_at,user_id,action,result,client_id,operation_id,trace_id",
-              "content": {
-                "text/csv": {
-                  "schema": {
-                    "type": "string"
-                  }
+    },
+    "/api/admin/console/audit/export": {
+      "get": {
+        "operationId": "exportConsoleAudit",
+        "description": "Audit export as CSV, capped at 1000 rows, same ROLE_SYSTEM_ADMIN/ROLE_ADMIN_AUDIT requirement. Trace/administrative fields only; columns are treated as static identifiers and cells are defensively filtered.",
+        "responses": {
+          "200": {
+            "description": "CSV, header line created_at,user_id,action,result,client_id,operation_id,trace_id",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
                 }
               }
-            },
-            "default": {
-              "$ref": "#/components/responses/Rejected"
             }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
           }
         }
       }
-    ],
+    },
     "/api/admin/console/users/{id}/roles": {
       "get": {
         "operationId": "listConsoleRoles",
@@ -1692,6 +1688,85 @@
                 }
               }
             }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
+    "/api/admin/console/clients/{clientId}": {
+      "put": {
+        "operationId": "updateManagedClient",
+        "description": "Replaces an application's display name, redirect/logout URIs, scopes and back-channel URI. Client identifier and kind are immutable; the current secret is preserved. The same strict callback/scope contract as registration applies. Requires ROLE_SYSTEM_ADMIN or ROLE_ADMIN_APP; the update and its CLIENT_UPDATED audit commit together.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientRegistrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Application updated"
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
+    "/api/admin/console/clients/{clientId}/state": {
+      "post": {
+        "operationId": "setManagedClientState",
+        "description": "Enables or disables an application. Disabling rejects the client at /oauth/authorize, /oauth/token, /oauth/introspect and /oauth/revoke through a pre-authentication filter and revokes every existing authorization family (which enqueues back-channel logout). Enabling restores protocol access but does not resurrect revoked families. Idempotent per key: a replay never re-applies the change and never duplicates the audit trail.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{16,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientStateChange"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "State applied and audited (or replayed idempotently)"
           },
           "default": {
             "$ref": "#/components/responses/Rejected"
@@ -2133,6 +2208,8 @@
             "type": "string",
             "enum": [
               "ROLE_SYSTEM_ADMIN",
+              "ROLE_ADMIN_APP",
+              "ROLE_ADMIN_AUDIT",
               "ROLE_ADMIN_PASSWORD_RESET",
               "ROLE_ADMIN_PASSWORD_RECOVERY",
               "ROLE_ADMIN_MFA_RECOVERY"
@@ -2157,7 +2234,8 @@
           "redirectUris",
           "postLogoutRedirectUris",
           "scopes",
-          "issuedAt"
+          "issuedAt",
+          "enabled"
         ],
         "properties": {
           "id": {
@@ -2204,6 +2282,10 @@
           "issuedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "False once disabled through the console."
           }
         }
       },
@@ -2320,6 +2402,24 @@
               "null"
             ],
             "format": "date-time"
+          }
+        }
+      },
+      "ClientStateChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "reason"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
           }
         }
       }

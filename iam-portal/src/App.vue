@@ -19,7 +19,7 @@ const links = ref([{ path: '/portal/', name: '账户概览' }, { path: '/portal/
 if (!publicPage) void get<{ roles?: string[] }>('/api/session/me').then(value => {
   const roles = value.roles ?? []
   if (roles.includes('ROLE_SYSTEM_ADMIN') || roles.includes('ROLE_ADMIN_APP')) links.value = [...links.value, { path: '/portal/admin/clients', name: '应用管理' }]
-  if (roles.includes('ROLE_SYSTEM_ADMIN')) links.value = [...links.value, { path: '/portal/admin', name: '管理控制台' }]
+  if (roles.includes('ROLE_SYSTEM_ADMIN') || roles.includes('ROLE_ADMIN_AUDIT')) links.value = [...links.value, { path: '/portal/admin', name: '管理控制台' }]
 }).catch(() => { /* portal pages handle their own 401 recovery */ })
 const error = ref(''); const busy = ref(false); const flowError = new URLSearchParams(window.location.search).has('flow_error')
 async function exit() { if (busy.value) return; busy.value = true; error.value = ''; try { await logout() } catch (failure) { error.value = message(failure); busy.value = false } }

@@ -22,15 +22,8 @@ public final class ClientRegistrationService {
     private final boolean localHttp;
     public ClientRegistrationService(RegisteredClientRepository clients, boolean localHttp) { this.clients=clients; this.localHttp=localHttp; }
     public String register(Spec spec, String secret) {
-        if (spec==null || spec.clientId()==null || !spec.clientId().matches("[A-Za-z0-9_.-]{3,100}") || spec.name()==null || spec.name().isBlank() || spec.name().length()>200
-                || spec.kind()==null || spec.redirects()==null || spec.redirects().isEmpty() || spec.redirects().size()>10
-                || spec.logoutRedirects()==null || spec.logoutRedirects().size()>10 || spec.scopes()==null || !spec.scopes().contains("openid")
-                || !Set.of("openid","profile","email","api.read").containsAll(spec.scopes())) throw new IllegalArgumentException("Invalid client specification");
+        validate(spec);
         if (clients.findByClientId(spec.clientId())!=null) throw new IllegalStateException("Client already registered");
-        spec.redirects().forEach(value->validateRedirect(value,spec.kind())); spec.logoutRedirects().forEach(value->validateRedirect(value,spec.kind()));
-        if(spec.backchannel()!=null){
-            validateBackchannel(spec.backchannel(),spec.redirects(),spec.kind());
-        }
         var builder=RegisteredClient.withId(UUID.randomUUID().toString()).clientId(spec.clientId()).clientName(spec.name())
                 .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
                 .clientSettings(ClientSettings.builder().requireProofKey(true).requireAuthorizationConsent(false).setting("unipass.native",spec.kind()==Kind.NATIVE)
@@ -45,6 +38,17 @@ public final class ClientRegistrationService {
         } else builder.clientAuthenticationMethod(ClientAuthenticationMethod.NONE);
         if (spec.kind()!=Kind.SPA) builder.authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN);
         RegisteredClient client=builder.build(); clients.save(client); return client.getId();
+    }
+    /** Shared contract for registration and later application edits. */
+    public void validate(Spec spec) {
+        if (spec==null || spec.clientId()==null || !spec.clientId().matches("[A-Za-z0-9_.-]{3,100}") || spec.name()==null || spec.name().isBlank() || spec.name().length()>200
+                || spec.kind()==null || spec.redirects()==null || spec.redirects().isEmpty() || spec.redirects().size()>10
+                || spec.logoutRedirects()==null || spec.logoutRedirects().size()>10 || spec.scopes()==null || !spec.scopes().contains("openid")
+                || !Set.of("openid","profile","email","api.read").containsAll(spec.scopes())) throw new IllegalArgumentException("Invalid client specification");
+        spec.redirects().forEach(value->validateRedirect(value,spec.kind())); spec.logoutRedirects().forEach(value->validateRedirect(value,spec.kind()));
+        if(spec.backchannel()!=null){
+            validateBackchannel(spec.backchannel(),spec.redirects(),spec.kind());
+        }
     }
     private void validateRedirect(String value,Kind kind) {
         if (value==null || value.length()>1000) throw new IllegalArgumentException("Invalid callback URI");

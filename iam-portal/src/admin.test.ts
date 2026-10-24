@@ -68,6 +68,18 @@ describe('admin console', () => {
     expect(wrapper.text()).toContain('角色已授予')
   })
 
+  it('gives a read-only auditor the audit trail without the role form', async () => {
+    const auditor = { ...adminAccount, roles: ['ROLE_ADMIN_AUDIT'] }
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      if (path === '/api/session/me') return body(auditor)
+      if (path.startsWith('/api/admin/console/audit')) return body({ entries: [auditEntry], nextCursor: null })
+      return body({ error: 'MUST_NOT_CALL' })
+    }))
+    const wrapper = attach(); await flushPromises()
+    expect(wrapper.text()).toContain('ROLE_GRANTED')
+    expect(wrapper.findAll('button').some(button => button.text() === '撤销角色' || button.text() === '授予角色')).toBe(false)
+  })
+
   it('never sends a raw cursor back without validation', async () => {
     const fetcher = vi.fn(async (path: string) => path === '/api/session/me' ? body(adminAccount) : body({ entries: [], nextCursor: '../escape' }))
     vi.stubGlobal('fetch', fetcher)

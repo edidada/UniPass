@@ -8,7 +8,7 @@ export interface LoginEntry { id: string; authenticatedAt: string; lastAccessAt:
 export interface LoginPage { entries: LoginEntry[]; nextCursor: string | null }
 export interface AdminAuditEntry { id: string; createdAt: string; subject: string | null; action: string; result: string; clientId: string | null; operationId: string | null; detail: Record<string, string> }
 export interface AdminAuditPage { entries: AdminAuditEntry[]; nextCursor: string | null }
-export interface ClientSummary { id: string; clientId: string; name: string; kind: 'CONFIDENTIAL' | 'NATIVE' | 'SPA'; redirectUris: string[]; postLogoutRedirectUris: string[]; scopes: string[]; issuedAt: string }
+export interface ClientSummary { id: string; clientId: string; name: string; kind: 'CONFIDENTIAL' | 'NATIVE' | 'SPA'; enabled: boolean; redirectUris: string[]; postLogoutRedirectUris: string[]; scopes: string[]; backchannelLogoutUri: string; issuedAt: string }
 export interface IssuedClientSecret { id: string; clientId: string; secret: string | null; previousSecretValidUntil: string | null }
 export const isClientId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_.-]{3,100}$/.test(value)
 
@@ -40,12 +40,18 @@ export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
 }
 export async function csrf(): Promise<Csrf> { return get<Csrf>('/api/public/csrf') }
 export async function post<T>(path: string, body: unknown = {}, key?: string): Promise<T> {
+  return await write<T>('POST', path, body, key)
+}
+export async function put<T>(path: string, body: unknown = {}, key?: string): Promise<T> {
+  return await write<T>('PUT', path, body, key)
+}
+async function write<T>(method: 'POST' | 'PUT', path: string, body: unknown, key?: string): Promise<T> {
   // Validate the target before the CSRF proof is fetched so a rejected path never opens a session.
   assertApiPath(path)
   const proof = await csrf()
   const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json', [proof.header_name]: proof.token }
   if (key) headers['Idempotency-Key'] = key
-  return await decode(await send(path, { method: 'POST', headers, body: JSON.stringify(body) })) as T
+  return await decode(await send(path, { method, headers, body: JSON.stringify(body) })) as T
 }
 export async function logout(): Promise<void> {
   const proof = await csrf()

@@ -33,6 +33,13 @@ public final class AdminConsoleService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Console authority required");
     }
 
+    /** Read-only audit access follows the independent AUDITOR permission; it cannot grant roles. */
+    public void requireAuditor(IdentityPrincipal principal) {
+        List<String> roles = accounts.roles(principal.getUserId());
+        if (!roles.contains("ROLE_SYSTEM_ADMIN") && !roles.contains("ROLE_ADMIN_AUDIT"))
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Audit authority required");
+    }
+
     public List<String> roles(UUID target) {
         return jdbc.queryForList("SELECT role FROM iam_user_role WHERE user_id=? ORDER BY role", String.class, target);
     }
@@ -81,6 +88,6 @@ public final class AdminConsoleService {
         });
     }
 
-    static final Set<String> ASSIGNABLE = Set.of("ROLE_SYSTEM_ADMIN", "ROLE_ADMIN_APP", "ROLE_ADMIN_PASSWORD_RESET",
+    static final Set<String> ASSIGNABLE = Set.of("ROLE_SYSTEM_ADMIN", "ROLE_ADMIN_APP", "ROLE_ADMIN_AUDIT", "ROLE_ADMIN_PASSWORD_RESET",
             "ROLE_ADMIN_PASSWORD_RECOVERY", "ROLE_ADMIN_MFA_RECOVERY");
 }

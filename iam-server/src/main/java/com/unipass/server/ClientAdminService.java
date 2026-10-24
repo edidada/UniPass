@@ -62,22 +62,115 @@ public final class ClientAdminService {
         @Override public String toString() { return "Issued[" + clientId + "]"; }
     }
 
-    public record Summary(String id, String clientId, String name, String kind, List<String> redirectUris,
-            List<String> postLogoutRedirectUris, Set<String> scopes, Instant issuedAt) { }
+    public record Summary(String id, String clientId, String name, String kind, boolean enabled, List<String> redirectUris,
+            List<String> postLogoutRedirectUris, Set<String> scopes, String backchannelLogoutUri, Instant issuedAt) { }
 
     public List<Summary> list() {
+        Map<String, Boolean> disabled = new HashMap<>();
+        jdbc.query("SELECT client_id,disabled FROM oauth_client_status", r -> { disabled.put(r.getString(1), r.getBoolean(2)); });
         List<Summary> all = new ArrayList<>();
         for (String id : jdbc.queryForList("SELECT client_id FROM oauth2_registered_client ORDER BY client_id", String.class)) {
             RegisteredClient client = clients.findByClientId(id);
             if (client == null) continue;
-            String kind = !client.getClientAuthenticationMethods().contains(ClientAuthenticationMethod.NONE) ? "CONFIDENTIAL"
-                    : Boolean.TRUE.equals(client.getClientSettings().getSetting("unipass.native")) ? "NATIVE" : "SPA";
-            all.add(new Summary(client.getId(), client.getClientId(), client.getClientName(), kind,
+            all.add(new Summary(client.getId(), client.getClientId(), client.getClientName(), kind(client),
+                    !Boolean.TRUE.equals(disabled.get(id)),
                     client.getRedirectUris().stream().sorted().toList(),
                     client.getPostLogoutRedirectUris().stream().sorted().toList(),
-                    new TreeSet<>(client.getScopes()), client.getClientIdIssuedAt()));
+                    new TreeSet<>(client.getScopes()),
+                    String.valueOf(client.getClientSettings().getSetting("unipass.backchannel_logout_uri") == null ? "" : client.getClientSettings().getSetting("unipass.backchannel_logout_uri")),
+                    client.getClientIdIssuedAt()));
         }
         return all;
+    }
+
+    private static String kind(RegisteredClient client) {
+        return !client.getClientAuthenticationMethods().contains(ClientAuthenticationMethod.NONE) ? "CONFIDENTIAL"
+                : Boolean.TRUE.equals(client.getClientSettings().getSetting("unipass.native")) ? "NATIVE" : "SPA";
+    }
+
+    public void update(IdentityPrincipal principal, String clientId, Registration spec, String reason) {
+        requireAppAdmin(principal);
+        requireReason(reason);
+        if (spec == null || !clientId.equals(spec.clientId()))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Client identifier is immutable");
+        tx.executeWithoutResult(status -> {
+            accounts.lockAndRequire(principal);
+            RegisteredClient existing = locked(clientId);
+            ClientRegistrationService.Kind kind;
+            try { kind = ClientRegistrationService.Kind.valueOf(spec.kind()); }
+            catch (RuntimeException e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Client kind required"); }
+            if (!kind.name().equals(kind(existing)))
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Client kind cannot change");
+            var definition = new ClientRegistrationService.Spec(spec.clientId(), spec.name(), kind,
+                    spec.redirectUris(), spec.logoutRedirectUris(), spec.scopes(), spec.backchannelLogoutUri());
+            try { registration.validate(definition); }
+            catch (IllegalArgumentException invalid) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid client specification"); }
+            var rebuilt = RegisteredClient.withId(existing.getId())
+                    .clientId(existing.getClientId()).clientName(spec.name())
+                    .clientIdIssuedAt(existing.getClientIdIssuedAt())
+                    .clientSecret(existing.getClientSecret()).clientSecretExpiresAt(existing.getClientSecretExpiresAt());
+            existing.getClientAuthenticationMethods().forEach(rebuilt::clientAuthenticationMethod);
+            existing.getAuthorizationGrantTypes().forEach(rebuilt::authorizationGrantType);
+            definition.redirects().forEach(rebuilt::redirectUri);
+            definition.logoutRedirects().forEach(rebuilt::postLogoutRedirectUri);
+            definition.scopes().forEach(rebuilt::scope);
+            rebuilt.clientSettings(org.springframework.security.oauth2.server.authorization.settings.ClientSettings.builder()
+                    .requireProofKey(existing.getClientSettings().isRequireProofKey())
+                    .requireAuthorizationConsent(existing.getClientSettings().isRequireAuthorizationConsent())
+                    .setting("unipass.native", existing.getClientSettings().getSetting("unipass.native"))
+                    .setting("unipass.backchannel_logout_uri", spec.backchannelLogoutUri() == null ? "" : spec.backchannelLogoutUri()).build());
+            rebuilt.tokenSettings(existing.getTokenSettings());
+            clients.save(rebuilt.build());
+            audit.record("CLIENT_UPDATED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
+                    clientId, null, Map.of("client_id", clientId, "kind", kind.name()));
+        });
+    }
+
+    /** Idempotent per key; a replay never re-applies the change (it cannot resurrect a later disable). */
+    public void setEnabled(IdentityPrincipal principal, String clientId, boolean enabled, String reason, String key) {
+        requireAppAdmin(principal);
+        requireReason(reason);
+        if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency key required");
+        tx.executeWithoutResult(status -> {
+            accounts.lockAndRequire(principal);
+            locked(clientId);
+            String action = enabled ? "ENABLE" : "DISABLE";
+            UUID actionId = UUID.randomUUID();
+            boolean fresh = jdbc.update("""
+                    INSERT INTO admin_client_action(id,actor_id,client_id,action,idempotency_key,reason,created_at)
+                    VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING
+                    """, actionId, principal.getUserId(), clientId, action, key, reason, Timestamp.from(clock.instant())) == 1;
+            if (!fresh) {
+                String stored = jdbc.query("""
+                        SELECT reason FROM admin_client_action
+                        WHERE actor_id=? AND client_id=? AND action=? AND idempotency_key=?
+                        """, (org.springframework.jdbc.core.ResultSetExtractor<String>) r -> {
+                    if (!r.next()) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
+                    return r.getString(1);
+                }, principal.getUserId(), clientId, action, key);
+                if (!reason.equals(stored)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
+                return;
+            }
+            jdbc.update("""
+                    INSERT INTO oauth_client_status(client_id,disabled,reason,updated_at) VALUES (?,?,?,?)
+                    ON CONFLICT (client_id) DO UPDATE SET disabled=excluded.disabled,reason=excluded.reason,updated_at=excluded.updated_at
+                    """, clientId, !enabled, reason, Timestamp.from(clock.instant()));
+            if (!enabled) {
+                // The V8 trigger enqueues back-channel logout for every newly revoked family.
+                jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE registered_client_id=? AND revoked=false", clientId);
+            }
+            audit.record(enabled ? "CLIENT_ENABLED" : "CLIENT_DISABLED", "SUCCESS", principal.getUserId(), null,
+                    principal.getLoginId(), clientId, actionId, Map.of("client_id", clientId));
+        });
+    }
+
+    private RegisteredClient locked(String clientId) {
+        if (jdbc.queryForList("SELECT client_id FROM oauth2_registered_client WHERE client_id=? FOR UPDATE", String.class, clientId).isEmpty())
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Client unavailable");
+        RegisteredClient client = clients.findByClientId(clientId);
+        if (client == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Client unavailable");
+        return client;
     }
 
     public Issued register(IdentityPrincipal principal, Registration spec) {

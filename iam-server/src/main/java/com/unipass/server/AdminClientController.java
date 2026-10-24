@@ -27,8 +27,26 @@ public final class AdminClientController {
         return clients.rotate(principal, clientId, rotation.reason, key);
     }
 
+    @PutMapping("/{clientId}") @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    void update(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable String clientId,
+            @RequestBody ClientAdminService.Registration registration) {
+        clients.update(principal, clientId, registration, registration.reason());
+    }
+
+    @PostMapping("/{clientId}/state") @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    void state(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable String clientId,
+            @RequestHeader("Idempotency-Key") String key, @RequestBody StateChange change) {
+        clients.setEnabled(principal, clientId, change.enabled, change.reason, key);
+    }
+
     public static final class Rotation {
         @com.fasterxml.jackson.annotation.JsonProperty("reason") public String reason;
         @Override public String toString() { return "Rotation[REDACTED]"; }
+    }
+
+    public static final class StateChange {
+        @com.fasterxml.jackson.annotation.JsonProperty("enabled") public boolean enabled;
+        @com.fasterxml.jackson.annotation.JsonProperty("reason") public String reason;
+        @Override public String toString() { return "StateChange[REDACTED]"; }
     }
 }
