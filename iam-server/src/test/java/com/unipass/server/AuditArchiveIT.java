@@ -107,7 +107,7 @@ class AuditArchiveIT {
         // Both attempts stay traceable even when the second restored no rows.
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='AUDIT_RESTORED'", Integer.class));
         // Tampering with an archived row is detected and blocks the restore.
-        jdbc.update("UPDATE audit_archive SET detail='{\"role\":\"TAMPERED\"}'::jsonb WHERE batch_id=? AND id=(SELECT min(id) FROM audit_archive WHERE batch_id=?)", batch.id(), batch.id());
+        jdbc.update("UPDATE audit_archive SET detail='{\"role\":\"TAMPERED\"}'::jsonb WHERE id=(SELECT id FROM audit_archive WHERE batch_id=? ORDER BY id LIMIT 1)", batch.id());
         assertFalse(archives.verify(batch.id()).intact());
         assertEquals(409, rejected(() -> maintenance.restore(operator(), batch.id(), null)).getStatusCode().value());
     }
