@@ -105,7 +105,7 @@ function detailText(entry: AdminAuditEntry): string {
       <p v-if="busy" role="status">正在加载…</p><p v-else-if="!audit.length && !error">暂无审计记录。</p><button v-if="cursor" class="secondary" :disabled="busy" @click="loadAudit(true)">加载更多记录</button>
     </section>
     <section class="card"><h2>审计归档</h2><p class="muted">早于截止时间的记录会移入归档表并生成 SHA-256 批次摘要；恢复前校验完整性，重复恢复不会重复插入。</p>
-      <form v-if="hasConsole()" @submit.prevent="archive">
+      <form id="archive-form" v-if="hasConsole()" @submit.prevent="archive">
         <p><label for="archive-cutoff">截止时间（UTC）</label><input id="archive-cutoff" v-model="cutoff" type="datetime-local" /></p>
         <p><label for="archive-max">每批上限</label><input id="archive-max" v-model.number="maxRows" type="number" min="1" max="10000" /></p>
         <div class="actions"><button type="submit" :disabled="archiveBusy">归档此前的记录</button></div>
@@ -116,7 +116,7 @@ function detailText(entry: AdminAuditEntry): string {
       <p v-if="archiveError" role="alert" class="error">{{ archiveError }}</p><p v-if="archiveNotice" role="status" class="good">{{ archiveNotice }}</p>
     </section>
     <section v-if="hasConsole()" class="card"><h2>管理角色</h2><p class="muted">仅允许操作员人不可推导的固定角色集合；同一幂等键重放同一上下文会被拒绝。</p>
-      <form @submit.prevent="changeKind('GRANT')">
+      <form id="role-form" @submit.prevent="changeKind('GRANT')">
         <p><label for="admin-target">用户编号（UUID）</label><input id="admin-target" v-model="target" autocomplete="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000" @blur="loadRoles(true)" /></p>
         <p v-if="roles.length">现有角色：{{ roles.join('、') }}</p><p v-else-if="target && !rolesBusy && isUuid(target)">该对象暂无可显示角色。</p>
         <p><label for="admin-role">角色</label><select id="admin-role" v-model="role"><option v-for="option in assignable" :key="option" :value="option">{{ option }}</option></select></p>

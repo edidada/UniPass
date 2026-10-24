@@ -63,7 +63,7 @@ describe('admin console', () => {
     await wrapper.get('#admin-target').setValue(targetUuid)
     await wrapper.get('#admin-target').trigger('blur'); await flushPromises()
     await wrapper.get('#admin-reason').setValue('审计联动交接')
-    await wrapper.get('form').trigger('submit'); await flushPromises()
+    await wrapper.get('#role-form').trigger('submit'); await flushPromises()
     expect(postedPath).toBe(`/api/admin/console/users/${targetUuid}/roles`)
     expect(postedBody).toEqual({ action: 'GRANT', role: 'ROLE_SYSTEM_ADMIN', reason: '审计联动交接' })
     expect(postedKey).toMatch(/^[0-9a-f-]{36}$/)
@@ -84,7 +84,9 @@ describe('admin console', () => {
   })
 
   it('never sends a raw cursor back without validation', async () => {
-    const fetcher = vi.fn(async (path: string) => path === '/api/session/me' ? body(adminAccount) : body({ entries: [], nextCursor: '../escape' }))
+    const fetcher = vi.fn(async (path: string) => path === '/api/session/me' ? body(adminAccount)
+      : path === '/api/admin/console/audit/archive' ? body([])
+      : body({ entries: [], nextCursor: '../escape' }))
     vi.stubGlobal('fetch', fetcher)
     const wrapper = attach(); await flushPromises()
     const more = wrapper.findAll('button').find(button => button.text().includes('加载更多记录'))
