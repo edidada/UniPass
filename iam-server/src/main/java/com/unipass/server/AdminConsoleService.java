@@ -45,6 +45,10 @@ public final class AdminConsoleService {
     }
 
     public void change(IdentityPrincipal principal, UUID target, String action, String role, String reason, String key) {
+        change(principal, target, action, role, reason, key, null);
+    }
+
+    public void change(IdentityPrincipal principal, UUID target, String action, String role, String reason, String key, String sourceIp) {
         requireConsole(principal);
         if (!principal.hasRecentPassword(clock.instant()) || !mfa.recent(principal))
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Administrative authority and recent password/MFA required");
@@ -72,7 +76,7 @@ public final class AdminConsoleService {
                         throw new ResponseStatusException(HttpStatus.CONFLICT, "Last console administrator");
                 }
                 audit.record(action.equals("GRANT") ? "ROLE_GRANTED" : "ROLE_REVOKED", "SUCCESS", principal.getUserId(), target,
-                        principal.getLoginId(), null, actionId, Map.of("role", role, "reason", reason.trim()));
+                        principal.getLoginId(), null, actionId, Map.of("role", role, "reason", reason.trim()), sourceIp);
             } else {
                 // A key reuse with identical context stays idempotent without a second audit row;
                 // different context is rejected so a replay can never silently change the outcome.

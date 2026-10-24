@@ -2135,7 +2135,8 @@
           "result",
           "clientId",
           "operationId",
-          "detail"
+          "detail",
+          "sourceIp"
         ],
         "properties": {
           "id": {
@@ -2185,6 +2186,14 @@
               "type": "string"
             },
             "description": "Allowlisted keys: role, reason, login, target_action, replay, operator. Unknown keys never reach storage."
+          },
+          "sourceIp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64,
+            "description": "Canonical client address. Forwarding headers are only honored when the direct peer is in unipass.audit.trusted-proxies; the nearest untrusted hop is recorded."
           }
         }
       },

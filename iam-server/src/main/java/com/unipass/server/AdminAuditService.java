@@ -30,6 +30,11 @@ public final class AdminAuditService {
     /** Throws IllegalArgumentException on contract violations (detail contract errors are operator mistakes, not user errors). */
     public UUID record(String action, String result, UUID actor, UUID subject, UUID login, String clientId,
             UUID operationId, Map<String, String> detail) {
+        return record(action, result, actor, subject, login, clientId, operationId, detail, null);
+    }
+
+    public UUID record(String action, String result, UUID actor, UUID subject, UUID login, String clientId,
+            UUID operationId, Map<String, String> detail, String sourceIp) {
         Objects.requireNonNull(action);
         if (!action.matches("[A-Z_]{1,64}")) throw new IllegalArgumentException("action");
         if (result == null || !Set.of("SUCCESS", "REJECTED", "UNAVAILABLE").contains(result)) throw new IllegalArgumentException("result");
@@ -46,13 +51,14 @@ public final class AdminAuditService {
         // allowlisted detail object so console writes stay attributable (T8 actor field).
         safe.put("operator", Objects.requireNonNull(actor).toString());
         jdbc.update("INSERT INTO auth_audit(id,user_id,action,trace_id,login_id,result,client_id,source_ip,operation_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?,?,?::jsonb,?)",
-                id, subject, action, UUID.randomUUID(), login, result, trimmed(clientId, 100), null, operationId,
+                id, subject, action, UUID.randomUUID(), login, result, trimmed(clientId, 100),
+                sourceIp != null && sourceIp.length() <= 64 ? sourceIp : null, operationId,
                 json(safe), Timestamp.from(clock.instant()));
         return id;
     }
 
     public record Entry(UUID id, Instant createdAt, UUID subject, String action, String result, String clientId,
-            String operationId, Map<String, Object> detail) { }
+            String operationId, String sourceIp, Map<String, Object> detail) { }
 
     public record Page(List<Entry> entries, String nextCursor) { }
 
@@ -60,12 +66,12 @@ public final class AdminAuditService {
     public Page page(String cursor, int limit) {
         DecodedCursor decoded = DecodedCursor.parse(cursor);
         List<Entry> rows = jdbc.query(
-                "SELECT id,created_at,user_id,action,result,client_id,operation_id,detail FROM auth_audit "
+                "SELECT id,created_at,user_id,action,result,client_id,operation_id,source_ip,detail FROM auth_audit "
                         + "WHERE (?::timestamptz IS NULL OR (created_at,id) < (?::timestamptz,?::uuid)) "
                         + "ORDER BY created_at DESC, id DESC LIMIT ?",
                 (r, n) -> new Entry(r.getObject("id", UUID.class), r.getTimestamp("created_at").toInstant(),
                         r.getObject("user_id", UUID.class), r.getString("action"), r.getString("result"),
-                        r.getString("client_id"), r.getString("operation_id"),
+                        r.getString("client_id"), r.getString("operation_id"), r.getString("source_ip"),
                         readDetail(r.getString("detail"))),
                 decoded.createdAt, decoded.createdAt, decoded.id, limit);
         if (rows.size() == limit && !rows.isEmpty()) {
@@ -78,21 +84,21 @@ public final class AdminAuditService {
     /** Export is a separate permissionless-by-role read with a hard row cap and CSV formula-injection defense. */
     public List<String> export(int cap) {
         List<String> lines = new ArrayList<>();
-        lines.add("created_at,user_id,action,result,client_id,operation_id,trace_id");
+        lines.add("created_at,user_id,action,result,client_id,operation_id,trace_id,source_ip");
         org.springframework.jdbc.core.RowCallbackHandler writer =
                 r -> lines.add(String.join(",",
                         r.getString("created_at").replace(",", " "),
                         String.valueOf(r.getObject("user_id", UUID.class)),
                         cell(r.getString("action")), cell(r.getString("result")), cell(r.getString("client_id")),
-                        cell(r.getString("operation_id")), cell(r.getString("trace_id"))));
-        jdbc.query("SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id FROM (SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id FROM auth_audit ORDER BY created_at DESC, id DESC LIMIT ?) e ORDER BY created_at, id",
+                        cell(r.getString("operation_id")), cell(r.getString("trace_id")), cell(r.getString("source_ip"))));
+        jdbc.query("SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id,source_ip FROM (SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id,source_ip FROM auth_audit ORDER BY created_at DESC, id DESC LIMIT ?) e ORDER BY created_at, id",
                 writer, cap);
         return lines;
     }
 
     private static String cell(String value) {
         if (value == null) return "";
-        if (!value.matches("^[A-Za-z0-9@./_ -]*$")) throw new IllegalStateException("Unsafe audit cell");
+        if (!value.matches("^[A-Za-z0-9@./:_ -]*$")) throw new IllegalStateException("Unsafe audit cell");
         return value.replace(" ", "");
     }
 

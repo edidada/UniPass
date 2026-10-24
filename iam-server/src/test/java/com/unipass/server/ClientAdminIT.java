@@ -207,8 +207,10 @@ class ClientAdminIT {
                 INSERT INTO oauth2_authorization(id,registered_client_id,principal_name,authorization_grant_type,authorized_scopes,attributes)
                 VALUES ('family-1','crm',?,'authorization_code','openid','')
                 """, OPERATOR.toString());
-        service.setEnabled(operator(), "crm", false, "疑似泄露", "disable-unit-key-001");
+        service.setEnabled(operator(), "crm", false, "疑似泄露", "disable-unit-key-001", "203.0.113.9");
         assertFalse(service.list().get(0).enabled());
+        assertEquals("203.0.113.9", jdbc.queryForObject(
+                "SELECT source_ip FROM auth_audit WHERE action='CLIENT_DISABLED'", String.class));
         assertTrue(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id='family-1'", Boolean.class));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_DISABLED'", Integer.class));
         // Protocol endpoints are blocked before any authorization-server provider runs.
