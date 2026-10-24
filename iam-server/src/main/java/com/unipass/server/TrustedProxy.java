@@ -66,8 +66,10 @@ final class TrustedProxy {
             int close = result.indexOf(']');
             if (close < 0) return null;
             result = result.substring(1, close);
-        } else if (result.indexOf(':') == result.lastIndexOf(':') && result.indexOf('.') > 0) {
-            result = result.substring(0, result.indexOf(':'));
+        } else {
+            int colon = result.indexOf(':');
+            if (colon > 0 && colon == result.lastIndexOf(':') && result.indexOf('.') > 0)
+                result = result.substring(0, colon);
         }
         result = result.replaceAll("^\"|\"$", "");
         return result;
