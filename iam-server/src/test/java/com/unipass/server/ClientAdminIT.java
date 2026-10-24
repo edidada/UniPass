@@ -27,6 +27,7 @@ class ClientAdminIT {
     private static final UUID OPERATOR = new UUID(0, 1);
     private static final UUID APP_ADMIN = new UUID(0, 2);
     private static final UUID NON_ADMIN = new UUID(0, 3);
+    private static final UUID AUDITOR = new UUID(0, 5);
     private EmbeddedPostgres pg;
     private JdbcTemplate jdbc;
     private TransactionTemplate tx;
@@ -57,6 +58,7 @@ class ClientAdminIT {
         Mockito.when(accounts.roles(OPERATOR)).thenReturn(List.of("ROLE_SYSTEM_ADMIN"));
         Mockito.when(accounts.roles(APP_ADMIN)).thenReturn(List.of("ROLE_ADMIN_APP"));
         Mockito.when(accounts.roles(NON_ADMIN)).thenReturn(List.of("ROLE_USER"));
+        Mockito.when(accounts.roles(AUDITOR)).thenReturn(List.of("ROLE_ADMIN_AUDIT"));
         var registration = new ClientRegistrationService(clients, false);
         service = new ClientAdminService(clients, jdbc, tx, accounts, new AdminAuditService(jdbc, clock), registration, clock, env);
         previous = new PreviousClientSecretAuthenticationProvider(clients, jdbc, clock);
@@ -194,7 +196,8 @@ class ClientAdminIT {
                 "crm", "X", "CONFIDENTIAL", List.of("https://crm.example/cb2"), List.of(), Set.of("profile"), null, "原因"), "原因")).getStatusCode().value());
         assertEquals(400, rejected(() -> service.update(operator(), "crm", new ClientAdminService.Registration(
                 "other", "X", "CONFIDENTIAL", List.of("https://crm.example/cb2"), List.of(), Set.of("openid"), null, "原因"), "原因")).getStatusCode().value());
-        assertEquals(404, rejected(() -> service.update(operator(), "missing", edited, "原因")).getStatusCode().value());
+        assertEquals(404, rejected(() -> service.update(operator(), "missing", new ClientAdminService.Registration(
+                "missing", "X", "CONFIDENTIAL", List.of("https://crm.example/cb2"), List.of(), Set.of("openid"), null, "原因"), "原因")).getStatusCode().value());
         assertEquals(403, rejected(() -> service.update(principal(NON_ADMIN, List.of("ROLE_USER")), "crm", edited, "原因")).getStatusCode().value());
     }
 
@@ -238,7 +241,7 @@ class ClientAdminIT {
 
     @Test void auditorReadsAuditButCannotChangeRolesOrClients() {
         var console = new AdminConsoleService(jdbc, tx, accounts, new AdminAuditService(jdbc, java.time.Clock.systemUTC()), null, java.time.Clock.systemUTC());
-        IdentityPrincipal auditor = principal(NON_ADMIN, List.of("ROLE_ADMIN_AUDIT"));
+        IdentityPrincipal auditor = principal(AUDITOR, List.of("ROLE_ADMIN_AUDIT"));
         assertDoesNotThrow(() -> console.requireAuditor(auditor));
         assertEquals(403, rejected(() -> console.requireConsole(auditor)).getStatusCode().value());
         assertEquals(403, rejected(() -> service.register(auditor, registration("nope", "SPA"))).getStatusCode().value());
