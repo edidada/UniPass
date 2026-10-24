@@ -56,7 +56,7 @@ class AuditArchiveIT {
             jdbc.update("""
                     INSERT INTO iam_user(id,employee_no,directory_id,directory_type,ldap_dn,display_name,status,source_id,source_version,auth_epoch)
                     VALUES (?,?,?,'OPENLDAP','uid=x','Test','ACTIVE','archive-test',1,5)
-                    """, id, id.toString().substring(0, 8), UUID.randomUUID());
+                    """, id, "archive-" + id.toString().substring(24), UUID.randomUUID());
     }
     private IdentityPrincipal principal(UUID user, List<String> roles) {
         return new IdentityPrincipal(user, 5, NOW, roles, NOW, IdentityPrincipal.Method.PASSWORD, NOW, UUID.randomUUID());
