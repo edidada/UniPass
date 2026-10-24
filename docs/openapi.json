@@ -1773,6 +1773,143 @@
           }
         }
       }
+    },
+    "/api/admin/console/audit/archive": {
+      "get": {
+        "operationId": "listAuditArchiveBatches",
+        "description": "Recent audit archive batches (newest first, at most 100). Requires ROLE_SYSTEM_ADMIN or ROLE_ADMIN_AUDIT. Only batch metadata and digest are returned, never archived row content.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archive batches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditArchiveBatch"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      },
+      "post": {
+        "operationId": "archiveAuditRows",
+        "description": "Moves at most max_rows audit rows older than cutoff into the archive and records a SHA-256 batch digest. Requires ROLE_SYSTEM_ADMIN with recent password and MFA. The move and the AUDIT_ARCHIVED entry commit together; an empty selection returns 200 with an empty body and creates no batch.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditArchiveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created batch, or empty when nothing matched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditArchiveBatch"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
+    "/api/admin/console/audit/archive/{batchId}": {
+      "get": {
+        "operationId": "verifyAuditArchiveBatch",
+        "description": "Recomputes the batch digest from the archived rows. Requires ROLE_SYSTEM_ADMIN or ROLE_ADMIN_AUDIT. intact=false means the archive was altered.",
+        "parameters": [
+          {
+            "name": "batchId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditArchiveVerification"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
+    "/api/admin/console/audit/archive/{batchId}/restore": {
+      "post": {
+        "operationId": "restoreAuditArchiveBatch",
+        "description": "Restores an intact batch into the live audit table (already-present rows are skipped, so a retry inserts nothing). A failed integrity check returns 409 and restores nothing. Requires ROLE_SYSTEM_ADMIN with recent password and MFA; the restore and AUDIT_RESTORED entry commit together.",
+        "parameters": [
+          {
+            "name": "batchId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Number of rows restored by this call",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "restored"
+                  ],
+                  "properties": {
+                    "restored": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2429,6 +2566,80 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          }
+        }
+      },
+      "AuditArchiveBatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "cutoff",
+          "rows",
+          "digest",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cutoff": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AuditArchiveRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cutoff",
+          "max_rows"
+        ],
+        "properties": {
+          "cutoff": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000,
+            "default": 1000
+          }
+        }
+      },
+      "AuditArchiveVerification": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "rows",
+          "intact"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rows": {
+            "type": "integer"
+          },
+          "intact": {
+            "type": "boolean"
           }
         }
       }

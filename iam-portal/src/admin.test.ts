@@ -31,6 +31,7 @@ describe('admin console', () => {
     const auditCalls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
       if (path === '/api/session/me') return body(adminAccount)
+      if (path === '/api/admin/console/audit/archive') return body([])
       if (path.startsWith('/api/admin/console/audit')) { auditCalls.push(path); return body(auditCalls.length === 1 ? { entries: [auditEntry], nextCursor: 'MTIzNDU2Nzg5MDEyMzQ1NnxkZWFkLTBmb2Y-' } : { entries: [], nextCursor: null }) }
       return body({ error: 'MUST_NOT_CALL' })
     }))
@@ -47,6 +48,7 @@ describe('admin console', () => {
     let postedPath = ''; let postedKey = ''; let postedBody: Record<string, unknown> = {}
     vi.stubGlobal('fetch', vi.fn(async (path: string, init?: RequestInit) => {
       if (path === '/api/session/me') return body(adminAccount)
+      if (path === '/api/admin/console/audit/archive') return body([])
       if (path.startsWith('/api/admin/console/audit')) return body({ entries: [], nextCursor: null })
       if (path === '/api/public/csrf') return body(csrf)
       if (init?.method === 'POST') {
@@ -61,7 +63,7 @@ describe('admin console', () => {
     await wrapper.get('#admin-target').setValue(targetUuid)
     await wrapper.get('#admin-target').trigger('blur'); await flushPromises()
     await wrapper.get('#admin-reason').setValue('审计联动交接')
-    await wrapper.get('form').trigger('submit'); await flushPromises()
+    await wrapper.get('#role-form').trigger('submit'); await flushPromises()
     expect(postedPath).toBe(`/api/admin/console/users/${targetUuid}/roles`)
     expect(postedBody).toEqual({ action: 'GRANT', role: 'ROLE_SYSTEM_ADMIN', reason: '审计联动交接' })
     expect(postedKey).toMatch(/^[0-9a-f-]{36}$/)
@@ -72,6 +74,7 @@ describe('admin console', () => {
     const auditor = { ...adminAccount, roles: ['ROLE_ADMIN_AUDIT'] }
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
       if (path === '/api/session/me') return body(auditor)
+      if (path === '/api/admin/console/audit/archive') return body([])
       if (path.startsWith('/api/admin/console/audit')) return body({ entries: [auditEntry], nextCursor: null })
       return body({ error: 'MUST_NOT_CALL' })
     }))
@@ -81,14 +84,16 @@ describe('admin console', () => {
   })
 
   it('never sends a raw cursor back without validation', async () => {
-    const fetcher = vi.fn(async (path: string) => path === '/api/session/me' ? body(adminAccount) : body({ entries: [], nextCursor: '../escape' }))
+    const fetcher = vi.fn(async (path: string) => path === '/api/session/me' ? body(adminAccount)
+      : path === '/api/admin/console/audit/archive' ? body([])
+      : body({ entries: [], nextCursor: '../escape' }))
     vi.stubGlobal('fetch', fetcher)
     const wrapper = attach(); await flushPromises()
     const more = wrapper.findAll('button').find(button => button.text().includes('加载更多记录'))
     expect(more).toBeDefined()
     await more!.trigger('click'); await flushPromises()
     // The malicious cursor is rejected client-side before any further request, and never rendered.
-    const auditPaths = fetcher.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/api/admin/console/audit'))
+    const auditPaths = fetcher.mock.calls.map(([path]) => String(path)).filter(path => path === '/api/admin/console/audit' || path.startsWith('/api/admin/console/audit?'))
     expect(auditPaths).toHaveLength(1)
     expect(wrapper.text()).not.toContain('../escape')
   })

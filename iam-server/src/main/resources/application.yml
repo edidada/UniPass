@@ -47,6 +47,13 @@ unipass:
     enabled: ${UNIPASS_FEISHU_ENABLED:false}
   security:
     generation-key: ${UNIPASS_REDIS_GENERATION_KEY:unipass:security:generation}
+  audit:
+    trusted-proxies: ${UNIPASS_AUDIT_TRUSTED_PROXIES:}
+    retention: ${UNIPASS_AUDIT_RETENTION:P180D}
+    archive:
+      enabled: ${UNIPASS_AUDIT_ARCHIVE_ENABLED:false}
+      interval: ${UNIPASS_AUDIT_ARCHIVE_INTERVAL:PT30M}
+      initial-delay: ${UNIPASS_AUDIT_ARCHIVE_INITIAL_DELAY:PT1M}
   recovery:
     email:
       enabled: ${UNIPASS_RECOVERY_EMAIL_ENABLED:false}
