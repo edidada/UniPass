@@ -17,7 +17,7 @@ CREATE TABLE audit_archive (
  batch_id uuid NOT NULL
 );
 CREATE INDEX audit_archive_time ON audit_archive(created_at);
-CREATE INDEX audit_archive_batch ON audit_archive(batch_id);
+CREATE INDEX audit_archive_batch_index ON audit_archive(batch_id);
 CREATE TABLE audit_archive_batch (
  id uuid PRIMARY KEY,
  cutoff timestamptz NOT NULL,
