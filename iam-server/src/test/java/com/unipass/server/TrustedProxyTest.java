@@ -23,9 +23,9 @@ class TrustedProxyTest {
     @Test void usesTheNearestUntrustedHopAndIgnoresClientPrependedValues() {
         var proxy = new TrustedProxy("10.0.0.0/8, 192.168.0.0/16");
         assertEquals("198.51.100.7", proxy.resolve(request("10.1.2.3", "203.0.113.5, 198.51.100.7, 10.9.9.9", null)));
-        assertEquals("192.168.5.5", proxy.resolve(request("10.0.0.1", "192.168.5.5", null)));
-        // Only trusted hops: fall back to the direct peer.
-        assertEquals("10.1.2.3", proxy.resolve(request("10.1.2.3", "10.8.8.8, 10.9.9.9", null)));
+        assertEquals("198.51.100.8", proxy.resolve(request("10.0.0.1", "198.51.100.8, 192.168.5.5", null)));
+        // Every hop is a registered proxy: fall back to the direct peer.
+        assertEquals("10.1.2.3", proxy.resolve(request("10.1.2.3", "10.8.8.8, 192.168.5.5", null)));
     }
 
     @Test void stripsPortsAndHandlesQuotedForwardedElements() {
