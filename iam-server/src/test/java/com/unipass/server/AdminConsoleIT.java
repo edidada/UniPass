@@ -195,7 +195,7 @@ class AdminConsoleIT {
                     Map.of("role", (i % 2 == 0) ? "ROLE_ADMIN_PASSWORD_RESET" : "ROLE_ADMIN_PASSWORD_RECOVERY"));
         List<String> lines = audit.export(10);
         assertEquals(11, lines.size());
-        assertEquals("created_at,user_id,action,result,client_id,operation_id,trace_id", lines.get(0));
+        assertEquals("created_at,user_id,action,result,client_id,operation_id,trace_id,source_ip", lines.get(0));
         assertTrue(lines.get(1).contains("ROLE_GRANTED"));
     }
 

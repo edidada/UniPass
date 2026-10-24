@@ -1,5 +1,7 @@
 package com.unipass.server;
 
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
@@ -8,7 +10,8 @@ import java.util.List;
 @RequestMapping("/api/admin/console/clients")
 public final class AdminClientController {
     private final ClientAdminService clients;
-    public AdminClientController(ClientAdminService clients) { this.clients = clients; }
+    private final TrustedProxy proxies;
+    public AdminClientController(ClientAdminService clients, TrustedProxy proxies) { this.clients = clients; this.proxies = proxies; }
 
     @GetMapping
     List<ClientAdminService.Summary> list(@AuthenticationPrincipal IdentityPrincipal principal) {
@@ -17,26 +20,27 @@ public final class AdminClientController {
     }
 
     @PostMapping
-    ClientAdminService.Issued register(@AuthenticationPrincipal IdentityPrincipal principal, @RequestBody ClientAdminService.Registration registration) {
-        return clients.register(principal, registration);
+    ClientAdminService.Issued register(@AuthenticationPrincipal IdentityPrincipal principal, @RequestBody ClientAdminService.Registration registration,
+            HttpServletRequest request) {
+        return clients.register(principal, registration, proxies.resolve(request));
     }
 
     @PostMapping("/{clientId}/rotate")
     ClientAdminService.Issued rotate(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable String clientId,
-            @RequestHeader("Idempotency-Key") String key, @RequestBody Rotation rotation) {
-        return clients.rotate(principal, clientId, rotation.reason, key);
+            @RequestHeader("Idempotency-Key") String key, @RequestBody Rotation rotation, HttpServletRequest request) {
+        return clients.rotate(principal, clientId, rotation.reason, key, proxies.resolve(request));
     }
 
-    @PutMapping("/{clientId}") @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    @PutMapping("/{clientId}") @ResponseStatus(HttpStatus.NO_CONTENT)
     void update(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable String clientId,
-            @RequestBody ClientAdminService.Registration registration) {
-        clients.update(principal, clientId, registration, registration.reason());
+            @RequestBody ClientAdminService.Registration registration, HttpServletRequest request) {
+        clients.update(principal, clientId, registration, registration.reason(), proxies.resolve(request));
     }
 
-    @PostMapping("/{clientId}/state") @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    @PostMapping("/{clientId}/state") @ResponseStatus(HttpStatus.NO_CONTENT)
     void state(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable String clientId,
-            @RequestHeader("Idempotency-Key") String key, @RequestBody StateChange change) {
-        clients.setEnabled(principal, clientId, change.enabled, change.reason, key);
+            @RequestHeader("Idempotency-Key") String key, @RequestBody StateChange change, HttpServletRequest request) {
+        clients.setEnabled(principal, clientId, change.enabled, change.reason, key, proxies.resolve(request));
     }
 
     public static final class Rotation {

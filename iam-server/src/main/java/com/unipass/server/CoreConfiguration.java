@@ -25,6 +25,9 @@ import java.util.*;
 @Configuration
 public class CoreConfiguration {
     @Bean Clock clock() { return Clock.systemUTC(); }
+    @Bean TrustedProxy trustedProxies(Environment env) {
+        return new TrustedProxy(env.getProperty("unipass.audit.trusted-proxies", ""));
+    }
     @Bean ClientRegistrationService clientRegistration(RegisteredClientRepository clients, Environment env) {
         return new ClientRegistrationService(clients, env.getProperty("unipass.local-http", Boolean.class, false));
     }

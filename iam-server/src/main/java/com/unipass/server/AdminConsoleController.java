@@ -11,9 +11,10 @@ import java.util.*;
 public final class AdminConsoleController {
     private final AdminConsoleService console;
     private final AdminAuditService audit;
+    private final TrustedProxy proxies;
 
-    public AdminConsoleController(AdminConsoleService console, AdminAuditService audit) {
-        this.console = console; this.audit = audit;
+    public AdminConsoleController(AdminConsoleService console, AdminAuditService audit, TrustedProxy proxies) {
+        this.console = console; this.audit = audit; this.proxies = proxies;
     }
 
     @GetMapping("/audit")
@@ -46,9 +47,10 @@ public final class AdminConsoleController {
 
     @PostMapping("/users/{id}/roles") @ResponseStatus(HttpStatus.NO_CONTENT)
     void change(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable UUID id,
-            @RequestHeader("Idempotency-Key") String key, @RequestBody RoleChange change) {
+            @RequestHeader("Idempotency-Key") String key, @RequestBody RoleChange change,
+            jakarta.servlet.http.HttpServletRequest request) {
         if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency key required");
-        console.change(principal, id, change.action, change.role, change.reason, key);
+        console.change(principal, id, change.action, change.role, change.reason, key, proxies.resolve(request));
     }
 }

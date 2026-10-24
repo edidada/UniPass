@@ -89,6 +89,10 @@ public final class ClientAdminService {
     }
 
     public void update(IdentityPrincipal principal, String clientId, Registration spec, String reason) {
+        update(principal, clientId, spec, reason, null);
+    }
+
+    public void update(IdentityPrincipal principal, String clientId, Registration spec, String reason, String sourceIp) {
         requireAppAdmin(principal);
         requireReason(reason);
         if (spec == null || !clientId.equals(spec.clientId()))
@@ -122,12 +126,16 @@ public final class ClientAdminService {
             rebuilt.tokenSettings(existing.getTokenSettings());
             clients.save(rebuilt.build());
             audit.record("CLIENT_UPDATED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
-                    clientId, null, Map.of("client_id", clientId, "kind", kind.name()));
+                    clientId, null, Map.of("client_id", clientId, "kind", kind.name()), sourceIp);
         });
     }
 
     /** Idempotent per key; a replay never re-applies the change (it cannot resurrect a later disable). */
     public void setEnabled(IdentityPrincipal principal, String clientId, boolean enabled, String reason, String key) {
+        setEnabled(principal, clientId, enabled, reason, key, null);
+    }
+
+    public void setEnabled(IdentityPrincipal principal, String clientId, boolean enabled, String reason, String key, String sourceIp) {
         requireAppAdmin(principal);
         requireReason(reason);
         if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
@@ -161,7 +169,7 @@ public final class ClientAdminService {
                 jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE registered_client_id=? AND revoked=false", clientId);
             }
             audit.record(enabled ? "CLIENT_ENABLED" : "CLIENT_DISABLED", "SUCCESS", principal.getUserId(), null,
-                    principal.getLoginId(), clientId, actionId, Map.of("client_id", clientId));
+                    principal.getLoginId(), clientId, actionId, Map.of("client_id", clientId), sourceIp);
         });
     }
 
@@ -174,6 +182,10 @@ public final class ClientAdminService {
     }
 
     public Issued register(IdentityPrincipal principal, Registration spec) {
+        return register(principal, spec, null);
+    }
+
+    public Issued register(IdentityPrincipal principal, Registration spec, String sourceIp) {
         requireAppAdmin(principal);
         requireReason(spec.reason());
         ClientRegistrationService.Kind kind;
@@ -189,12 +201,16 @@ public final class ClientAdminService {
             catch (IllegalStateException duplicate) { throw new ResponseStatusException(HttpStatus.CONFLICT, "Client already registered"); }
             catch (IllegalArgumentException invalid) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid client specification"); }
             audit.record("CLIENT_REGISTERED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
-                    spec.clientId(), null, Map.of("client_id", spec.clientId(), "kind", kind.name()));
+                    spec.clientId(), null, Map.of("client_id", spec.clientId(), "kind", kind.name()), sourceIp);
             return new Issued(id, spec.clientId(), secret, null);
         });
     }
 
     public Issued rotate(IdentityPrincipal principal, String clientId, String reason, String key) {
+        return rotate(principal, clientId, reason, key, null);
+    }
+
+    public Issued rotate(IdentityPrincipal principal, String clientId, String reason, String key, String sourceIp) {
         requireAppAdmin(principal);
         requireReason(reason);
         if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
@@ -226,7 +242,7 @@ public final class ClientAdminService {
             clients.save(RegisteredClient.from(client).clientSecret(
                     PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(secret)).build());
             audit.record("CLIENT_SECRET_ROTATED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
-                    clientId, actionId, Map.of("client_id", clientId, "previous_secret_valid_until", until.toString()));
+                    clientId, actionId, Map.of("client_id", clientId, "previous_secret_valid_until", until.toString()), sourceIp);
             return new Issued(client.getId(), clientId, secret, until);
         });
     }
