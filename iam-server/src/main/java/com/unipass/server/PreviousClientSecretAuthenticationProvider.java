@@ -43,7 +43,7 @@ final class PreviousClientSecretAuthenticationProvider implements Authentication
             try { matches = ENCODER.matches(secret, hash); }
             catch (IllegalArgumentException malformed) { matches = false; }
             if (matches) return new OAuth2ClientAuthenticationToken(client, token.getClientAuthenticationMethod(),
-                    token.getCredentials(), token.getAdditionalParameters());
+                    token.getCredentials());
         }
         return null;
     }
