@@ -112,6 +112,7 @@ public class SecurityConfiguration {
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login")))
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()));
         http.requestCache(cache->cache.requestCache(new org.springframework.security.web.savedrequest.NullRequestCache()));
+        http.addFilterBefore(new ClientStatusFilter(jdbc),SecurityContextHolderFilter.class);
         http.addFilterBefore(origins.filter(true),org.springframework.security.web.csrf.CsrfFilter.class);
         http.addFilterAfter(new SessionEpochFilter(accounts, clock,sessions,continuations), SecurityContextHolderFilter.class);
         http.addFilterAfter(new AuthorizationRequestGuard(clients, accounts, mfa,continuations), SessionEpochFilter.class);

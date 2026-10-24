@@ -6,7 +6,7 @@ import ClientsPage from './pages/ClientsPage.vue'
 const appAdmin = { sub: '6442eccc-9153-48c7-ae69-811ba6f75836', auth_epoch: 1, login_id: '6442eccc-9153-48c7-ae69-811ba6f75836', method: 'PASSWORD', authenticated_at: '2026-10-24T00:00:00Z', password_recent: true, must_change_password: false, roles: ['ROLE_ADMIN_APP'], mfa: { enrolled: false, required: false, recent: false, recovery_required: false } }
 const plain = { ...appAdmin, roles: ['ROLE_USER'] }
 const csrf = { header_name: 'X-CSRF-TOKEN', parameter_name: '_csrf', token: 'client-csrf-proof' }
-const confidential = { id: 'c1', clientId: 'crm', name: 'CRM', kind: 'CONFIDENTIAL', redirectUris: ['https://crm.example/cb'], postLogoutRedirectUris: [], scopes: ['api.read', 'openid'], issuedAt: '2026-10-24T00:00:00Z' }
+const confidential = { id: 'c1', clientId: 'crm', name: 'CRM', kind: 'CONFIDENTIAL', enabled: true, redirectUris: ['https://crm.example/cb'], postLogoutRedirectUris: [], scopes: ['api.read', 'openid'], backchannelLogoutUri: '', issuedAt: '2026-10-24T00:00:00Z' }
 const native = { ...confidential, id: 'c2', clientId: 'mobile', name: 'Mobile', kind: 'NATIVE' }
 let wrappers: VueWrapper[] = []
 const body = (value: unknown, status = 200) => new Response(status === 204 ? null : JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
@@ -63,6 +63,31 @@ describe('application management', () => {
     expect(wrapper.text()).toContain('A'.repeat(43))
     await wrapper.findAll('button').find(button => button.text() === '我已妥善保存')!.trigger('click')
     expect(wrapper.text()).not.toContain('A'.repeat(43))
+  })
+
+  it('disables an application with a reason and a private idempotency key', async () => {
+    let postedPath = ''; let postedBody: Record<string, unknown> = {}; let postedKey = ''; let enabled = true
+    vi.stubGlobal('fetch', vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/api/session/me') return body(appAdmin)
+      if (path === '/api/public/csrf') return body(csrf)
+      if (path.endsWith('/state') && init?.method === 'POST') {
+        postedPath = path; postedBody = JSON.parse(String(init.body)) as Record<string, unknown>
+        postedKey = (init.headers as Record<string, string>)['Idempotency-Key']!
+        enabled = false; return body(null, 204)
+      }
+      if (path === '/api/admin/console/clients') return body([{ ...confidential, enabled }])
+      return body({ error: 'MUST_NOT_CALL' })
+    }))
+    const wrapper = attach(); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '停用')!.trigger('click')
+    await wrapper.get(`input[aria-label="停用 crm 的原因"]`).setValue('疑似泄露')
+    await wrapper.findAll('button').find(button => button.text() === '确认停用')!.trigger('click')
+    await flushPromises()
+    expect(postedPath).toBe('/api/admin/console/clients/crm/state')
+    expect(postedBody).toEqual({ enabled: false, reason: '疑似泄露' })
+    expect(postedKey).toMatch(/^[0-9a-f-]{36}$/)
+    expect(wrapper.text()).toContain('应用已停用')
+    expect(wrapper.text()).toContain('已停用')
   })
 
   it('rejects an invalid client identifier before any registration request', async () => {

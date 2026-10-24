@@ -19,7 +19,7 @@ public final class AdminConsoleController {
     @GetMapping("/audit")
     AdminAuditService.Page audit(@AuthenticationPrincipal IdentityPrincipal principal,
             @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "50") int limit) {
-        console.requireConsole(principal);
+        console.requireAuditor(principal);
         if (limit < 1 || limit > 100) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size out of range");
         try { return audit.page(cursor, limit); }
         catch (IllegalArgumentException e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cursor rejected"); }
@@ -27,7 +27,7 @@ public final class AdminConsoleController {
 
     @GetMapping(value = "/audit/export", produces = "text/csv")
     String export(@AuthenticationPrincipal IdentityPrincipal principal) {
-        console.requireConsole(principal);
+        console.requireAuditor(principal);
         return String.join("\n", audit.export(1000)) + "\n";
     }
 

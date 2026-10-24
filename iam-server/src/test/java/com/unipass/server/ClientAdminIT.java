@@ -27,12 +27,14 @@ class ClientAdminIT {
     private static final UUID OPERATOR = new UUID(0, 1);
     private static final UUID APP_ADMIN = new UUID(0, 2);
     private static final UUID NON_ADMIN = new UUID(0, 3);
+    private static final UUID AUDITOR = new UUID(0, 5);
     private EmbeddedPostgres pg;
     private JdbcTemplate jdbc;
     private TransactionTemplate tx;
     private RegisteredClientRepository clients;
     private ClientAdminService service;
     private PreviousClientSecretAuthenticationProvider previous;
+    private AccountState accounts;
     private final AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-10-24T00:00:00Z"));
     private final Duration overlap = Duration.ofHours(1);
 
@@ -52,10 +54,11 @@ class ClientAdminIT {
         Environment env = Mockito.mock(Environment.class);
         Mockito.when(env.getProperty("unipass.clients.secret-rotation-window", Duration.class, ClientAdminService.DEFAULT_OVERLAP))
                 .thenReturn(overlap);
-        AccountState accounts = Mockito.mock(AccountState.class);
+        accounts = Mockito.mock(AccountState.class);
         Mockito.when(accounts.roles(OPERATOR)).thenReturn(List.of("ROLE_SYSTEM_ADMIN"));
         Mockito.when(accounts.roles(APP_ADMIN)).thenReturn(List.of("ROLE_ADMIN_APP"));
         Mockito.when(accounts.roles(NON_ADMIN)).thenReturn(List.of("ROLE_USER"));
+        Mockito.when(accounts.roles(AUDITOR)).thenReturn(List.of("ROLE_ADMIN_AUDIT"));
         var registration = new ClientRegistrationService(clients, false);
         service = new ClientAdminService(clients, jdbc, tx, accounts, new AdminAuditService(jdbc, clock), registration, clock, env);
         previous = new PreviousClientSecretAuthenticationProvider(clients, jdbc, clock);
@@ -168,6 +171,83 @@ class ClientAdminIT {
         assertEquals(400, rejected(() -> service.rotate(operator(), "spa", "原因", "rotate-unit-key-0004")).getStatusCode().value());
         assertEquals(400, rejected(() -> service.rotate(operator(), "crm", "原因", "short")).getStatusCode().value());
         assertNotEquals(current, client("crm").getClientSecret(), "the successful rotation updates the current hash");
+    }
+
+    @Test void editChangesCallbacksScopesAndNameWithValidation() {
+        service.register(operator(), registration("crm", "CONFIDENTIAL"));
+        var edited = new ClientAdminService.Registration("crm", "CRM 新名称",
+                "CONFIDENTIAL", List.of("https://crm.example/cb2"), List.of("https://crm.example/bye"),
+                Set.of("openid", "profile"), "https://crm.example/logout/backchannel", "调整回调");
+        service.update(operator(), "crm", edited, edited.reason());
+        RegisteredClient stored = client("crm");
+        assertEquals("CRM 新名称", stored.getClientName());
+        assertEquals(Set.of("https://crm.example/cb2"), stored.getRedirectUris());
+        assertEquals(Set.of("https://crm.example/bye"), stored.getPostLogoutRedirectUris());
+        assertEquals(Set.of("openid", "profile"), stored.getScopes());
+        assertEquals("https://crm.example/logout/backchannel", stored.getClientSettings().getSetting("unipass.backchannel_logout_uri"));
+        assertNotNull(stored.getClientSecret(), "editing keeps the current secret");
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_UPDATED' AND detail->>'client_id'='crm'", Integer.class));
+        // Kind is immutable, callbacks stay strict and the target must exist.
+        assertEquals(400, rejected(() -> service.update(operator(), "crm", new ClientAdminService.Registration(
+                "crm", "X", "SPA", List.of("https://crm.example/cb2"), List.of(), Set.of("openid"), null, "原因"), "原因")).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.update(operator(), "crm", new ClientAdminService.Registration(
+                "crm", "X", "CONFIDENTIAL", List.of("http://crm.example/cb"), List.of(), Set.of("openid"), null, "原因"), "原因")).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.update(operator(), "crm", new ClientAdminService.Registration(
+                "crm", "X", "CONFIDENTIAL", List.of("https://crm.example/cb2"), List.of(), Set.of("profile"), null, "原因"), "原因")).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.update(operator(), "crm", new ClientAdminService.Registration(
+                "other", "X", "CONFIDENTIAL", List.of("https://crm.example/cb2"), List.of(), Set.of("openid"), null, "原因"), "原因")).getStatusCode().value());
+        assertEquals(404, rejected(() -> service.update(operator(), "missing", new ClientAdminService.Registration(
+                "missing", "X", "CONFIDENTIAL", List.of("https://crm.example/cb2"), List.of(), Set.of("openid"), null, "原因"), "原因")).getStatusCode().value());
+        assertEquals(403, rejected(() -> service.update(principal(NON_ADMIN, List.of("ROLE_USER")), "crm", edited, "原因")).getStatusCode().value());
+    }
+
+    @Test void disableRevokesFamiliesBlocksProtocolEndpointsAndEnableRestores() throws Exception {
+        service.register(operator(), registration("crm", "CONFIDENTIAL"));
+        jdbc.update("""
+                INSERT INTO oauth2_authorization(id,registered_client_id,principal_name,authorization_grant_type,authorized_scopes,attributes)
+                VALUES ('family-1','crm',?,'authorization_code','openid','')
+                """, OPERATOR.toString());
+        service.setEnabled(operator(), "crm", false, "疑似泄露", "disable-unit-key-001");
+        assertFalse(service.list().get(0).enabled());
+        assertTrue(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id='family-1'", Boolean.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_DISABLED'", Integer.class));
+        // Protocol endpoints are blocked before any authorization-server provider runs.
+        var request = new org.springframework.mock.web.MockHttpServletRequest("POST", "/oauth/token");
+        request.setParameter("client_id", "crm");
+        var response = new org.springframework.mock.web.MockHttpServletResponse();
+        var invoked = new java.util.concurrent.atomic.AtomicBoolean();
+        new ClientStatusFilter(jdbc).doFilterInternal(request, response, (req, res) -> invoked.set(true));
+        assertEquals(401, response.getStatus());
+        assertTrue(response.getContentAsString().contains("invalid_client"));
+        assertFalse(invoked.get());
+        // A different, still-enabled client passes through untouched.
+        service.register(operator(), registration("hrm", "CONFIDENTIAL"));
+        var allowed = new org.springframework.mock.web.MockHttpServletRequest("POST", "/oauth/token");
+        allowed.setParameter("client_id", "hrm");
+        var allowedResponse = new org.springframework.mock.web.MockHttpServletResponse();
+        var allowedInvoked = new java.util.concurrent.atomic.AtomicBoolean();
+        new ClientStatusFilter(jdbc).doFilterInternal(allowed, allowedResponse, (req, res) -> allowedInvoked.set(true));
+        assertTrue(allowedInvoked.get());
+        // Replaying the same key is idempotent: no duplicate audit, no re-applied change.
+        assertDoesNotThrow(() -> service.setEnabled(operator(), "crm", false, "疑似泄露", "disable-unit-key-001"));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_DISABLED'", Integer.class));
+        assertFalse(service.list().stream().filter(item -> item.clientId().equals("crm")).findFirst().orElseThrow().enabled());
+        service.setEnabled(operator(), "crm", true, "误报解除", "enable-unit-key-0001");
+        assertTrue(service.list().stream().filter(item -> item.clientId().equals("crm")).findFirst().orElseThrow().enabled());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_ENABLED'", Integer.class));
+        assertEquals(404, rejected(() -> service.setEnabled(operator(), "missing", false, "不存在", "state-unit-key-0001")).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.setEnabled(operator(), "crm", false, "坏键", "short")).getStatusCode().value());
+    }
+
+    @Test void auditorReadsAuditButCannotChangeRolesOrClients() {
+        var console = new AdminConsoleService(jdbc, tx, accounts, new AdminAuditService(jdbc, java.time.Clock.systemUTC()), null, java.time.Clock.systemUTC());
+        IdentityPrincipal auditor = principal(AUDITOR, List.of("ROLE_ADMIN_AUDIT"));
+        assertDoesNotThrow(() -> console.requireAuditor(auditor));
+        assertEquals(403, rejected(() -> console.requireConsole(auditor)).getStatusCode().value());
+        assertEquals(403, rejected(() -> service.register(auditor, registration("nope", "SPA"))).getStatusCode().value());
+        IdentityPrincipal appAdmin = principal(APP_ADMIN, List.of("ROLE_ADMIN_APP"));
+        assertEquals(403, rejected(() -> console.requireAuditor(appAdmin)).getStatusCode().value());
+        assertTrue(AdminConsoleService.ASSIGNABLE.contains("ROLE_ADMIN_AUDIT"));
     }
 
     @Test void expiredPreviousSecretsAreIgnoredAndMalformedHashesFailClosed() {

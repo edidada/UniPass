@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
-import { get, isClientId, message, post } from '../api'
+import { get, isClientId, message, post, put } from '../api'
 import type { ClientSummary, IssuedClientSecret } from '../api'
 import { useAccount } from '../flow'
 
@@ -10,6 +10,8 @@ const issued = ref<IssuedClientSecret>()
 const clientId = ref(''); const name = ref(''); const kind = ref<'CONFIDENTIAL' | 'NATIVE' | 'SPA'>('CONFIDENTIAL')
 const redirects = ref(''); const logoutRedirects = ref(''); const backchannel = ref(''); const reason = ref('')
 const rotateTarget = ref(''); const rotateReason = ref('')
+const stateTarget = ref(''); const stateReason = ref('')
+const editTarget = ref(''); const editName = ref(''); const editRedirects = ref(''); const editLogout = ref(''); const editBackchannel = ref(''); const editReason = ref('')
 const isOperator = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_APP') ?? false
 
 async function load() {
@@ -54,6 +56,36 @@ async function rotate() {
   } catch (failure) { error.value = message(failure) } finally { busy.value = false }
 }
 function dismiss() { issued.value = undefined }
+function beginEdit(client: ClientSummary) {
+  editTarget.value = client.clientId; editName.value = client.name
+  editRedirects.value = client.redirectUris.join('\n'); editLogout.value = client.postLogoutRedirectUris.join('\n')
+  editBackchannel.value = client.backchannelLogoutUri ?? ''; editReason.value = ''; notice.value = ''
+}
+async function saveEdit() {
+  if (busy.value || !editTarget.value) return
+  if (!editReason.value.trim()) { error.value = '请填写修改原因。'; return }
+  busy.value = true; error.value = ''; notice.value = ''
+  try {
+    await put(`/api/admin/console/clients/${editTarget.value}`, {
+      client_id: editTarget.value, name: editName.value, kind: clients.value.find(item => item.clientId === editTarget.value)?.kind,
+      redirect_uris: lines(editRedirects.value), post_logout_redirect_uris: lines(editLogout.value),
+      scopes: clients.value.find(item => item.clientId === editTarget.value)?.scopes ?? ['openid'],
+      backchannel_logout_uri: editBackchannel.value.trim() || null, reason: editReason.value.trim(),
+    })
+    notice.value = '应用配置已更新。'; editTarget.value = ''; await load()
+  } catch (failure) { error.value = message(failure) } finally { busy.value = false }
+}
+async function toggleState(client: ClientSummary) {
+  if (busy.value || stateTarget.value !== client.clientId) return
+  if (!stateReason.value.trim()) { error.value = '请填写停用或启用原因。'; return }
+  busy.value = true; error.value = ''; notice.value = ''
+  try {
+    await post(`/api/admin/console/clients/${client.clientId}/state`,
+      { enabled: !client.enabled, reason: stateReason.value.trim() }, crypto.randomUUID())
+    notice.value = client.enabled ? '应用已停用，关联授权已被撤销。' : '应用已重新启用。'
+    stateTarget.value = ''; stateReason.value = ''; await load()
+  } catch (failure) { error.value = message(failure) } finally { busy.value = false }
+}
 onBeforeUnmount(dismiss)
 </script>
 <template>
@@ -69,9 +101,18 @@ onBeforeUnmount(dismiss)
     </section>
     <section class="card"><h2>已登记应用</h2>
       <p class="muted">机密客户端密钥以单向哈希保存；轮换时旧密钥只在受控窗口内保留。</p>
-      <ul class="session-list"><li v-for="client in clients" :key="client.id"><div><h3>{{ client.name }} <span class="badge">{{ client.kind }}</span></h3><p><code>{{ client.clientId }}</code> · 登记于 {{ new Date(client.issuedAt).toLocaleString() }}</p><p class="muted">回调：{{ client.redirectUris.join('、') || '无' }}</p><p class="muted">scope：{{ client.scopes.join(' ') }}</p>
-        <p v-if="rotateTarget === client.clientId" class="actions"><input v-model="rotateReason" :aria-label="'轮换 ' + client.clientId + ' 的原因'" placeholder="轮换原因" maxlength="500" /><button :disabled="busy" @click="rotate">确认轮换</button><button class="secondary" :disabled="busy" @click="rotateTarget = ''">取消</button></p>
-        <p v-else><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button></p></div></li></ul>
+      <ul class="session-list"><li v-for="client in clients" :key="client.id"><div><h3>{{ client.name }} <span class="badge">{{ client.kind }}</span> <span class="badge" :class="client.enabled ? 'good' : ''">{{ client.enabled ? '启用' : '已停用' }}</span></h3><p><code>{{ client.clientId }}</code> · 登记于 {{ new Date(client.issuedAt).toLocaleString() }}</p><p class="muted">回调：{{ client.redirectUris.join('、') || '无' }}</p><p class="muted">scope：{{ client.scopes.join(' ') }}</p>
+        <p v-if="stateTarget === client.clientId" class="actions"><input v-model="stateReason" :aria-label="(client.enabled ? '停用 ' : '启用 ') + client.clientId + ' 的原因'" placeholder="操作原因" maxlength="500" /><button :class="client.enabled ? 'danger' : ''" :disabled="busy" @click="toggleState(client)">{{ client.enabled ? '确认停用' : '确认启用' }}</button><button class="secondary" :disabled="busy" @click="stateTarget = ''">取消</button></p>
+        <p v-else-if="rotateTarget === client.clientId" class="actions"><input v-model="rotateReason" :aria-label="'轮换 ' + client.clientId + ' 的原因'" placeholder="轮换原因" maxlength="500" /><button :disabled="busy" @click="rotate">确认轮换</button><button class="secondary" :disabled="busy" @click="rotateTarget = ''">取消</button></p>
+        <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button></p>
+        <form v-if="editTarget === client.clientId" @submit.prevent="saveEdit">
+          <p><label :for="'edit-name-' + client.id">显示名称</label><input :id="'edit-name-' + client.id" v-model="editName" maxlength="200" /></p>
+          <p><label :for="'edit-redirects-' + client.id">回调地址（每行一个）</label><textarea :id="'edit-redirects-' + client.id" v-model="editRedirects" spellcheck="false"></textarea></p>
+          <p><label :for="'edit-logout-' + client.id">退出后重定向（每行一个，可选）</label><textarea :id="'edit-logout-' + client.id" v-model="editLogout" spellcheck="false"></textarea></p>
+          <p><label :for="'edit-backchannel-' + client.id">后端退出通知地址（可选）</label><input :id="'edit-backchannel-' + client.id" v-model="editBackchannel" spellcheck="false" /></p>
+          <p><label :for="'edit-reason-' + client.id">修改原因</label><textarea :id="'edit-reason-' + client.id" v-model="editReason" maxlength="500"></textarea></p>
+          <div class="actions"><button type="submit" :disabled="busy">保存配置</button><button type="button" class="secondary" :disabled="busy" @click="editTarget = ''">取消</button></div>
+        </form></div></li></ul>
       <p v-if="busy" role="status">正在处理…</p><p v-else-if="!clients.length && !error">尚未登记应用。</p>
     </section>
     <section class="card"><h2>登记新应用</h2>

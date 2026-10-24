@@ -4,8 +4,10 @@ import { assertCursor, get, isUuid, message, post } from '../api'
 import type { AdminAuditEntry, AdminAuditPage } from '../api'
 import { useAccount } from '../flow'
 
-const assignable: string[] = ['ROLE_SYSTEM_ADMIN', 'ROLE_ADMIN_APP', 'ROLE_ADMIN_PASSWORD_RESET', 'ROLE_ADMIN_PASSWORD_RECOVERY', 'ROLE_ADMIN_MFA_RECOVERY']
+const assignable: string[] = ['ROLE_SYSTEM_ADMIN', 'ROLE_ADMIN_APP', 'ROLE_ADMIN_AUDIT', 'ROLE_ADMIN_PASSWORD_RESET', 'ROLE_ADMIN_PASSWORD_RECOVERY', 'ROLE_ADMIN_MFA_RECOVERY']
 const { identity, error: accountError } = useAccount()
+const hasAudit = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_AUDIT') ?? false
+const hasConsole = () => identity.value?.roles?.includes('ROLE_SYSTEM_ADMIN') ?? false
 const audit = ref<AdminAuditEntry[]>([]); const cursor = ref<string | null>(null); const error = ref(''); const busy = ref(false)
 const target = ref(''); const roles = ref<string[]>([]); const role = ref<string>(assignable[0]!)
 const reason = ref(''); const rolesError = ref(''); const rolesBusy = ref(false); const notice = ref('')
@@ -46,7 +48,7 @@ async function changeKind(action: 'GRANT' | 'REVOKE') {
 }
 
 watch(identity, value => { if (value) {
-  if (value.roles?.includes('ROLE_SYSTEM_ADMIN')) void loadAudit(); else error.value = '此账户没有管理控制台权限。'
+  if (hasAudit()) void loadAudit(); else error.value = '此账户没有管理控制台权限。'
 } })
 function inRoles(roleValue: string): boolean { return roles.value.includes(roleValue) }
 function detailText(entry: AdminAuditEntry): string {
@@ -60,12 +62,12 @@ function detailText(entry: AdminAuditEntry): string {
 <template>
   <header class="page-heading"><span class="eyebrow">管理控制台</span><h1>审计与角色</h1><p>查询控制台审计记录，授予或撤销管理角色。所有写操作都会留痕。</p></header>
   <p v-if="accountError || error" role="alert" class="error">{{ accountError || error }}</p>
-  <template v-if="identity && identity.roles?.includes('ROLE_SYSTEM_ADMIN')">
+  <template v-if="identity && hasAudit()">
     <section class="card"><h2>审计记录</h2><p class="muted">最新优先，每次最多 100 条；导出的 CSV 仅限 1000 行。</p>
       <ul class="session-list"><li v-for="entry in audit" :key="entry.id"><div><h3>{{ entry.action }} <span class="badge" :class="entry.result === 'SUCCESS' ? 'good' : ''">{{ entry.result }}</span></h3><p>{{ new Date(entry.createdAt).toLocaleString() }}<template v-if="entry.subject"> · 对象 {{ entry.subject }}</template></p><p class="muted" v-if="detailText(entry)">{{ detailText(entry) }}</p></div></li></ul>
       <p v-if="busy" role="status">正在加载…</p><p v-else-if="!audit.length && !error">暂无审计记录。</p><button v-if="cursor" class="secondary" :disabled="busy" @click="loadAudit(true)">加载更多记录</button>
     </section>
-    <section class="card"><h2>管理角色</h2><p class="muted">仅允许操作员人不可推导的固定角色集合；同一幂等键重放同一上下文会被拒绝。</p>
+    <section v-if="hasConsole()" class="card"><h2>管理角色</h2><p class="muted">仅允许操作员人不可推导的固定角色集合；同一幂等键重放同一上下文会被拒绝。</p>
       <form @submit.prevent="changeKind('GRANT')">
         <p><label for="admin-target">用户编号（UUID）</label><input id="admin-target" v-model="target" autocomplete="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000" @blur="loadRoles(true)" /></p>
         <p v-if="roles.length">现有角色：{{ roles.join('、') }}</p><p v-else-if="target && !rolesBusy && isUuid(target)">该对象暂无可显示角色。</p>
