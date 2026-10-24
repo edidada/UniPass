@@ -8,6 +8,8 @@ export interface LoginEntry { id: string; authenticatedAt: string; lastAccessAt:
 export interface LoginPage { entries: LoginEntry[]; nextCursor: string | null }
 export interface AdminAuditEntry { id: string; createdAt: string; subject: string | null; action: string; result: string; clientId: string | null; operationId: string | null; detail: Record<string, string> }
 export interface AdminAuditPage { entries: AdminAuditEntry[]; nextCursor: string | null }
+export interface AuditBatch { id: string; cutoff: string; rows: number; digest: string; createdAt: string }
+export interface AuditVerification { id: string; rows: number; intact: boolean }
 export interface ClientSummary { id: string; clientId: string; name: string; kind: 'CONFIDENTIAL' | 'NATIVE' | 'SPA'; enabled: boolean; redirectUris: string[]; postLogoutRedirectUris: string[]; scopes: string[]; backchannelLogoutUri: string; issuedAt: string }
 export interface IssuedClientSecret { id: string; clientId: string; secret: string | null; previousSecretValidUntil: string | null }
 export const isClientId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_.-]{3,100}$/.test(value)

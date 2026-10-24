@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { assertCursor, get, isUuid, message, post } from '../api'
-import type { AdminAuditEntry, AdminAuditPage } from '../api'
+import type { AdminAuditEntry, AdminAuditPage, AuditBatch, AuditVerification } from '../api'
 import { useAccount } from '../flow'
 
 const assignable: string[] = ['ROLE_SYSTEM_ADMIN', 'ROLE_ADMIN_APP', 'ROLE_ADMIN_AUDIT', 'ROLE_ADMIN_PASSWORD_RESET', 'ROLE_ADMIN_PASSWORD_RECOVERY', 'ROLE_ADMIN_MFA_RECOVERY']
@@ -47,8 +47,45 @@ async function changeKind(action: 'GRANT' | 'REVOKE') {
   } catch (failure) { rolesError.value = message(failure) } finally { rolesBusy.value = false }
 }
 
+const defaultCutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16)
+const batches = ref<AuditBatch[]>([]); const cutoff = ref(defaultCutoff); const maxRows = ref(1000)
+const archiveError = ref(''); const archiveNotice = ref(''); const archiveBusy = ref(false)
+
+async function loadBatches() {
+  if (!hasAudit()) return
+  try { batches.value = await get<AuditBatch[]>('/api/admin/console/audit/archive') }
+  catch (failure) { archiveError.value = message(failure) }
+}
+async function archive() {
+  if (archiveBusy.value || !hasConsole()) return
+  archiveBusy.value = true; archiveError.value = ''; archiveNotice.value = ''
+  try {
+    const batch = await post<AuditBatch>('/api/admin/console/audit/archive', {
+      cutoff: new Date(cutoff.value).toISOString(), max_rows: maxRows.value,
+    })
+    archiveNotice.value = batch ? `已归档 ${batch.rows} 条，批次 ${batch.id}。` : '没有早于截止时间的记录。'
+    await Promise.all([loadBatches(), loadAudit()])
+  } catch (failure) { archiveError.value = message(failure) } finally { archiveBusy.value = false }
+}
+async function verifyBatch(batch: AuditBatch) {
+  archiveBusy.value = true; archiveError.value = ''; archiveNotice.value = ''
+  try {
+    const result = await get<AuditVerification>(`/api/admin/console/audit/archive/${batch.id}`)
+    archiveNotice.value = result.intact ? '完整性校验通过。' : '完整性校验失败，批次可能被篡改。'
+  } catch (failure) { archiveError.value = message(failure) } finally { archiveBusy.value = false }
+}
+async function restoreBatch(batch: AuditBatch) {
+  if (!hasConsole()) return
+  archiveBusy.value = true; archiveError.value = ''; archiveNotice.value = ''
+  try {
+    const result = await post<{ restored: number }>(`/api/admin/console/audit/archive/${batch.id}/restore`)
+    archiveNotice.value = `已恢复 ${result.restored} 条记录。`
+    await Promise.all([loadBatches(), loadAudit()])
+  } catch (failure) { archiveError.value = message(failure) } finally { archiveBusy.value = false }
+}
+
 watch(identity, value => { if (value) {
-  if (hasAudit()) void loadAudit(); else error.value = '此账户没有管理控制台权限。'
+  if (hasAudit()) { void loadAudit(); void loadBatches() } else error.value = '此账户没有管理控制台权限。'
 } })
 function inRoles(roleValue: string): boolean { return roles.value.includes(roleValue) }
 function detailText(entry: AdminAuditEntry): string {
@@ -66,6 +103,17 @@ function detailText(entry: AdminAuditEntry): string {
     <section class="card"><h2>审计记录</h2><p class="muted">最新优先，每次最多 100 条；导出的 CSV 仅限 1000 行。</p>
       <ul class="session-list"><li v-for="entry in audit" :key="entry.id"><div><h3>{{ entry.action }} <span class="badge" :class="entry.result === 'SUCCESS' ? 'good' : ''">{{ entry.result }}</span></h3><p>{{ new Date(entry.createdAt).toLocaleString() }}<template v-if="entry.subject"> · 对象 {{ entry.subject }}</template></p><p class="muted" v-if="detailText(entry)">{{ detailText(entry) }}</p></div></li></ul>
       <p v-if="busy" role="status">正在加载…</p><p v-else-if="!audit.length && !error">暂无审计记录。</p><button v-if="cursor" class="secondary" :disabled="busy" @click="loadAudit(true)">加载更多记录</button>
+    </section>
+    <section class="card"><h2>审计归档</h2><p class="muted">早于截止时间的记录会移入归档表并生成 SHA-256 批次摘要；恢复前校验完整性，重复恢复不会重复插入。</p>
+      <form v-if="hasConsole()" @submit.prevent="archive">
+        <p><label for="archive-cutoff">截止时间（UTC）</label><input id="archive-cutoff" v-model="cutoff" type="datetime-local" /></p>
+        <p><label for="archive-max">每批上限</label><input id="archive-max" v-model.number="maxRows" type="number" min="1" max="10000" /></p>
+        <div class="actions"><button type="submit" :disabled="archiveBusy">归档此前的记录</button></div>
+      </form>
+      <ul class="session-list"><li v-for="batch in batches" :key="batch.id"><div><h3>批次 {{ batch.id.slice(0, 8) }} <span class="badge">{{ batch.rows }} 条</span></h3><p>截止 {{ new Date(batch.cutoff).toLocaleString() }} · 归档于 {{ new Date(batch.createdAt).toLocaleString() }}</p><p class="muted reference">{{ batch.digest }}</p></div>
+        <p class="actions"><button class="secondary" :disabled="archiveBusy" @click="verifyBatch(batch)">校验</button><button v-if="hasConsole()" class="secondary" :disabled="archiveBusy" @click="restoreBatch(batch)">恢复</button></p></li></ul>
+      <p v-if="archiveBusy" role="status">正在处理…</p><p v-else-if="!batches.length">暂无归档批次。</p>
+      <p v-if="archiveError" role="alert" class="error">{{ archiveError }}</p><p v-if="archiveNotice" role="status" class="good">{{ archiveNotice }}</p>
     </section>
     <section v-if="hasConsole()" class="card"><h2>管理角色</h2><p class="muted">仅允许操作员人不可推导的固定角色集合；同一幂等键重放同一上下文会被拒绝。</p>
       <form @submit.prevent="changeKind('GRANT')">

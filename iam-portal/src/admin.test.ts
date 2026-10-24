@@ -31,6 +31,7 @@ describe('admin console', () => {
     const auditCalls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
       if (path === '/api/session/me') return body(adminAccount)
+      if (path === '/api/admin/console/audit/archive') return body([])
       if (path.startsWith('/api/admin/console/audit')) { auditCalls.push(path); return body(auditCalls.length === 1 ? { entries: [auditEntry], nextCursor: 'MTIzNDU2Nzg5MDEyMzQ1NnxkZWFkLTBmb2Y-' } : { entries: [], nextCursor: null }) }
       return body({ error: 'MUST_NOT_CALL' })
     }))
@@ -47,6 +48,7 @@ describe('admin console', () => {
     let postedPath = ''; let postedKey = ''; let postedBody: Record<string, unknown> = {}
     vi.stubGlobal('fetch', vi.fn(async (path: string, init?: RequestInit) => {
       if (path === '/api/session/me') return body(adminAccount)
+      if (path === '/api/admin/console/audit/archive') return body([])
       if (path.startsWith('/api/admin/console/audit')) return body({ entries: [], nextCursor: null })
       if (path === '/api/public/csrf') return body(csrf)
       if (init?.method === 'POST') {
@@ -72,6 +74,7 @@ describe('admin console', () => {
     const auditor = { ...adminAccount, roles: ['ROLE_ADMIN_AUDIT'] }
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
       if (path === '/api/session/me') return body(auditor)
+      if (path === '/api/admin/console/audit/archive') return body([])
       if (path.startsWith('/api/admin/console/audit')) return body({ entries: [auditEntry], nextCursor: null })
       return body({ error: 'MUST_NOT_CALL' })
     }))
@@ -88,7 +91,7 @@ describe('admin console', () => {
     expect(more).toBeDefined()
     await more!.trigger('click'); await flushPromises()
     // The malicious cursor is rejected client-side before any further request, and never rendered.
-    const auditPaths = fetcher.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/api/admin/console/audit'))
+    const auditPaths = fetcher.mock.calls.map(([path]) => String(path)).filter(path => path === '/api/admin/console/audit' || path.startsWith('/api/admin/console/audit?'))
     expect(auditPaths).toHaveLength(1)
     expect(wrapper.text()).not.toContain('../escape')
   })

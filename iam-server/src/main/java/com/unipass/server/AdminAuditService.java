@@ -18,7 +18,7 @@ import java.util.*;
 public final class AdminAuditService {
     /** Detail keys never leave this allowlist; unknown keys are rejected, not silently stored. */
     static final Set<String> DETAIL_KEYS = Set.of("role", "reason", "login", "target_action", "replay", "operator",
-            "client_id", "kind", "previous_secret_valid_until");
+            "client_id", "kind", "previous_secret_valid_until", "batch_id", "rows");
     private static final int DETAIL_MAX = 500;
     private final JdbcTemplate jdbc;
     private final Clock clock;
@@ -49,7 +49,7 @@ public final class AdminAuditService {
         UUID id = UUID.randomUUID();
         // user_id stores the audit subject; the acting operator travels inside the
         // allowlisted detail object so console writes stay attributable (T8 actor field).
-        safe.put("operator", Objects.requireNonNull(actor).toString());
+        safe.put("operator", actor == null ? "system" : actor.toString());
         jdbc.update("INSERT INTO auth_audit(id,user_id,action,trace_id,login_id,result,client_id,source_ip,operation_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?,?,?::jsonb,?)",
                 id, subject, action, UUID.randomUUID(), login, result, trimmed(clientId, 100),
                 sourceIp != null && sourceIp.length() <= 64 ? sourceIp : null, operationId,
