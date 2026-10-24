@@ -1,0 +1,90 @@
+<script setup lang="ts">
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { get, isClientId, message, post } from '../api'
+import type { ClientSummary, IssuedClientSecret } from '../api'
+import { useAccount } from '../flow'
+
+const { identity, error: accountError } = useAccount()
+const clients = ref<ClientSummary[]>([]); const error = ref(''); const busy = ref(false); const notice = ref('')
+const issued = ref<IssuedClientSecret>()
+const clientId = ref(''); const name = ref(''); const kind = ref<'CONFIDENTIAL' | 'NATIVE' | 'SPA'>('CONFIDENTIAL')
+const redirects = ref(''); const logoutRedirects = ref(''); const backchannel = ref(''); const reason = ref('')
+const rotateTarget = ref(''); const rotateReason = ref('')
+const isOperator = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_APP') ?? false
+
+async function load() {
+  if (busy.value) return
+  busy.value = true; error.value = ''
+  try { clients.value = await get<ClientSummary[]>('/api/admin/console/clients') }
+  catch (failure) { error.value = message(failure) } finally { busy.value = false }
+}
+watch(identity, value => { if (value) {
+  if (isOperator()) void load(); else error.value = '此账户没有应用管理权限。'
+} })
+function lines(value: string): string[] {
+  return value.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+}
+async function register() {
+  if (busy.value) return
+  if (!isClientId(clientId.value)) { error.value = '客户端编号只能包含字母、数字、下划线、点与连字符，长度 3–100。'; return }
+  if (!reason.value.trim()) { error.value = '请填写登记原因。'; return }
+  busy.value = true; error.value = ''; notice.value = ''; issued.value = undefined
+  try {
+    issued.value = await post<IssuedClientSecret>('/api/admin/console/clients', {
+      client_id: clientId.value, name: name.value, kind: kind.value,
+      redirect_uris: lines(redirects.value), post_logout_redirect_uris: lines(logoutRedirects.value),
+      scopes: ['openid', 'profile', 'email', 'api.read'], backchannel_logout_uri: backchannel.value.trim() || null,
+      reason: reason.value.trim(),
+    })
+    notice.value = '应用已登记。密钥仅显示一次，请立即交付。'
+    clientId.value = ''; name.value = ''; redirects.value = ''; logoutRedirects.value = ''; backchannel.value = ''; reason.value = ''
+    await load()
+  } catch (failure) { error.value = message(failure) } finally { busy.value = false }
+}
+async function rotate() {
+  if (busy.value || !rotateTarget.value) return
+  if (!rotateReason.value.trim()) { error.value = '请填写轮换原因。'; return }
+  busy.value = true; error.value = ''; notice.value = ''
+  try {
+    issued.value = await post<IssuedClientSecret>(`/api/admin/console/clients/${rotateTarget.value}/rotate`,
+      { reason: rotateReason.value.trim() }, crypto.randomUUID())
+    notice.value = '密钥已轮换。旧密钥仅在显示的有效期内可用。'
+    rotateTarget.value = ''; rotateReason.value = ''
+    await load()
+  } catch (failure) { error.value = message(failure) } finally { busy.value = false }
+}
+function dismiss() { issued.value = undefined }
+onBeforeUnmount(dismiss)
+</script>
+<template>
+  <header class="page-heading"><span class="eyebrow">管理控制台</span><h1>应用与密钥</h1><p>登记 OAuth 应用并轮换机密客户端密钥。所有操作都会留痕。</p></header>
+  <p v-if="accountError || error" role="alert" class="error">{{ accountError || error }}</p>
+  <template v-if="identity && isOperator()">
+    <p v-if="notice" role="status" class="good">{{ notice }}</p>
+    <section v-if="issued" class="card" aria-labelledby="issued-title"><h2 id="issued-title">一次性密钥</h2>
+      <p>应用 <strong>{{ issued.clientId }}</strong> 的新密钥如下，关闭或刷新后不可再次查看：</p>
+      <p><code class="secret">{{ issued.secret ?? '（公共客户端无密钥）' }}</code></p>
+      <p v-if="issued.previousSecretValidUntil" class="muted">旧密钥仍可使用至 {{ new Date(issued.previousSecretValidUntil).toLocaleString() }}。</p>
+      <button class="secondary" @click="dismiss">我已妥善保存</button>
+    </section>
+    <section class="card"><h2>已登记应用</h2>
+      <p class="muted">机密客户端密钥以单向哈希保存；轮换时旧密钥只在受控窗口内保留。</p>
+      <ul class="session-list"><li v-for="client in clients" :key="client.id"><div><h3>{{ client.name }} <span class="badge">{{ client.kind }}</span></h3><p><code>{{ client.clientId }}</code> · 登记于 {{ new Date(client.issuedAt).toLocaleString() }}</p><p class="muted">回调：{{ client.redirectUris.join('、') || '无' }}</p><p class="muted">scope：{{ client.scopes.join(' ') }}</p>
+        <p v-if="rotateTarget === client.clientId" class="actions"><input v-model="rotateReason" :aria-label="'轮换 ' + client.clientId + ' 的原因'" placeholder="轮换原因" maxlength="500" /><button :disabled="busy" @click="rotate">确认轮换</button><button class="secondary" :disabled="busy" @click="rotateTarget = ''">取消</button></p>
+        <p v-else><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button></p></div></li></ul>
+      <p v-if="busy" role="status">正在处理…</p><p v-else-if="!clients.length && !error">尚未登记应用。</p>
+    </section>
+    <section class="card"><h2>登记新应用</h2>
+      <form @submit.prevent="register">
+        <p><label for="client-id">客户端编号</label><input id="client-id" v-model="clientId" autocomplete="off" spellcheck="false" placeholder="crm" /></p>
+        <p><label for="client-name">显示名称</label><input id="client-name" v-model="name" autocomplete="off" maxlength="200" /></p>
+        <p><label for="client-kind">类型</label><select id="client-kind" v-model="kind"><option value="CONFIDENTIAL">机密客户端（有密钥）</option><option value="NATIVE">原生应用</option><option value="SPA">浏览器 SPA</option></select></p>
+        <p><label for="client-redirects">回调地址（每行一个，必须 HTTPS 或已登记的原生 scheme）</label><textarea id="client-redirects" v-model="redirects" autocomplete="off" spellcheck="false"></textarea></p>
+        <p><label for="client-logout">退出后重定向（每行一个，可选）</label><textarea id="client-logout" v-model="logoutRedirects" autocomplete="off" spellcheck="false"></textarea></p>
+        <p><label for="client-backchannel">后端退出通知地址（固定 /logout/backchannel，可选）</label><input id="client-backchannel" v-model="backchannel" autocomplete="off" spellcheck="false" /></p>
+        <p><label for="client-reason">登记原因</label><textarea id="client-reason" v-model="reason" maxlength="500" autocomplete="off"></textarea></p>
+        <div class="actions"><button type="submit" :disabled="busy">登记应用</button></div>
+      </form>
+    </section>
+  </template>
+</template>

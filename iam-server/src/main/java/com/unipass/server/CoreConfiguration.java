@@ -11,6 +11,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
 import org.springframework.session.web.http.*;
 import java.net.URI;
 import java.nio.file.*;
@@ -23,6 +25,9 @@ import java.util.*;
 @Configuration
 public class CoreConfiguration {
     @Bean Clock clock() { return Clock.systemUTC(); }
+    @Bean ClientRegistrationService clientRegistration(RegisteredClientRepository clients, Environment env) {
+        return new ClientRegistrationService(clients, env.getProperty("unipass.local-http", Boolean.class, false));
+    }
     @Bean TransactionTemplate transactions(PlatformTransactionManager manager) {
         TransactionTemplate tx = new TransactionTemplate(manager); tx.setTimeout(10); return tx;
     }
