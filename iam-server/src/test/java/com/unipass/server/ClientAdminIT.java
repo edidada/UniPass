@@ -171,6 +171,32 @@ class ClientAdminIT {
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_SECRET_ROTATED' AND detail->>'client_id'='crm'", Integer.class));
     }
 
+    @Test void multiplePreviousGenerationsKeepTheirOwnDeadlines() {
+        String s0 = service.register(operator(), registration("crm", "CONFIDENTIAL")).secret();
+        Instant t0 = now.get();
+        String s1 = service.rotate(operator(), "crm", "第一次轮换", "rotate-gen-key-0001").secret();
+        now.set(t0.plus(overlap.dividedBy(2)));
+        String s2 = service.rotate(operator(), "crm", "第二次轮换", "rotate-gen-key-0002").secret();
+        // Both retired generations remain usable; the current secret is never in the fallback.
+        assertNotNull(previous.authenticate(presented("crm", s0)));
+        assertNotNull(previous.authenticate(presented("crm", s1)));
+        assertNull(previous.authenticate(presented("crm", s2)));
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT count(*) FROM oauth_client_secret_previous WHERE client_id='crm'", Integer.class));
+        // s0 expires at its original t0+overlap; s1 keeps its own later deadline.
+        now.set(t0.plus(overlap).plusSeconds(1));
+        assertNull(previous.authenticate(presented("crm", s0)));
+        assertNotNull(previous.authenticate(presented("crm", s1)));
+        // A third rotation removes only the expired generation and cannot extend s1.
+        String s3 = service.rotate(operator(), "crm", "第三次轮换", "rotate-gen-key-0003").secret();
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT count(*) FROM oauth_client_secret_previous WHERE client_id='crm'", Integer.class));
+        assertNull(previous.authenticate(presented("crm", s0)));
+        assertNotNull(previous.authenticate(presented("crm", s1)));
+        assertNotNull(previous.authenticate(presented("crm", s2)));
+        assertNull(previous.authenticate(presented("crm", s3)));
+    }
+
     @Test void rotationIsIdempotentPerKeyAndRejectsPublicClients() {
         service.register(operator(), registration("crm", "CONFIDENTIAL"));
         String current = client("crm").getClientSecret();
