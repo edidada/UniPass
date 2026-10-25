@@ -197,6 +197,26 @@ class ClientAdminIT {
         assertNull(previous.authenticate(presented("crm", s3)));
     }
 
+    @Test void perClientRotationWindowOverridesGlobalAndCanBeCleared() {
+        service.register(operator(), registration("crm", "CONFIDENTIAL"));
+        var set = service.setRotationWindow(operator(), "crm", 120, "短窗口", "window-key-000001", null);
+        assertEquals(120, set.seconds());
+        assertEquals(120, set.effectiveSeconds());
+        var rotated = service.rotate(operator(), "crm", "按客户端窗口轮换", "rotate-window-key-01");
+        assertEquals(now.get().plusSeconds(120), rotated.previousSecretValidUntil());
+        var cleared = service.setRotationWindow(operator(), "crm", null, "恢复全局", "window-key-000002", null);
+        assertNull(cleared.seconds());
+        assertEquals((int) overlap.getSeconds(), cleared.effectiveSeconds());
+        var rotated2 = service.rotate(operator(), "crm", "恢复全局后轮换", "rotate-window-key-02");
+        assertEquals(now.get().plus(overlap), rotated2.previousSecretValidUntil());
+        // Bounds and authority are enforced before any write.
+        assertEquals(400, rejected(() -> service.setRotationWindow(operator(), "crm", 59, "太短", "window-key-000003", null)).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.setRotationWindow(operator(), "crm", 604801, "太长", "window-key-000004", null)).getStatusCode().value());
+        assertEquals(404, rejected(() -> service.setRotationWindow(operator(), "missing", 120, "未知", "window-key-000005", null)).getStatusCode().value());
+        assertEquals(403, rejected(() -> service.setRotationWindow(principal(NON_ADMIN, List.of("ROLE_USER")), "crm", 120, "越权", "window-key-000006", null)).getStatusCode().value());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM admin_client_action WHERE action='WINDOW'", Integer.class));
+    }
+
     @Test void rotationIsIdempotentPerKeyAndRejectsPublicClients() {
         service.register(operator(), registration("crm", "CONFIDENTIAL"));
         String current = client("crm").getClientSecret();
@@ -306,6 +326,9 @@ class ClientAdminIT {
         // Deletion wins over enabled: enable and disable are both refused.
         assertEquals(409, rejected(() -> service.setEnabled(operator(), "crm", true, "复活", "enable-del-000001")).getStatusCode().value());
         assertEquals(409, rejected(() -> service.setEnabled(operator(), "crm", false, "再停用", "disable-del-0001")).getStatusCode().value());
+        // Other lifecycle writes are likewise refused on a tombstone.
+        assertEquals(409, rejected(() -> service.update(operator(), "crm", registration("crm", "CONFIDENTIAL"), "更新已删")).getStatusCode().value());
+        assertEquals(409, rejected(() -> service.rotate(operator(), "crm", "轮换已删", "rotate-deleted-0001")).getStatusCode().value());
         // An unrelated client is unaffected.
         service.register(operator(), registration("hrm", "CONFIDENTIAL"));
         assertEquals(1, service.list().stream().filter(s -> s.clientId().equals("hrm")).count());

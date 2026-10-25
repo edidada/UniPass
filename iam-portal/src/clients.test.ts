@@ -198,6 +198,43 @@ describe('application management', () => {
     expect(leaked(typeof sessionStorage !== 'undefined' ? sessionStorage : undefined)).toBe(false)
   })
 
+  it('loads and saves a per-client rotation window with an idempotency key', async () => {
+    let postedPath = ''; let postedBody: Record<string, unknown> = {}; let postedKey = ''
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/api/session/me') return body(appAdmin)
+      if (path === '/api/admin/console/clients') return body([confidential])
+      if (path === '/api/public/csrf') return body(csrf)
+      if (path === '/api/admin/console/clients/crm/rotation-window' && init?.method === 'POST') {
+        postedPath = path; postedBody = JSON.parse(String(init.body)) as Record<string, unknown>
+        postedKey = (init.headers as Record<string, string>)['Idempotency-Key']!
+        return body({ seconds: null, effectiveSeconds: 86400 })
+      }
+      if (path === '/api/admin/console/clients/crm/rotation-window') return body({ seconds: 300, effectiveSeconds: 300 })
+      return body({ error: 'MUST_NOT_CALL' })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    const button = wrapper.findAll('button').find(item => item.text() === '轮换窗口')!
+    await button.trigger('click'); await flushPromises()
+    expect(fetcher.mock.calls.some(([path]) => String(path).endsWith('/crm/rotation-window'))).toBe(true)
+    expect(wrapper.text()).toContain('当前有效 300 秒')
+    await wrapper.get('#window-seconds-c1').setValue('300')
+    await wrapper.get('#window-reason-c1').setValue('按业务调整')
+    const save = wrapper.findAll('button').find(item => item.text() === '保存窗口')!
+    await save.trigger('click'); await flushPromises()
+    expect(postedPath).toBe('/api/admin/console/clients/crm/rotation-window')
+    expect(postedBody).toEqual({ seconds: 300, reason: '按业务调整' })
+    expect(postedKey).toMatch(/^[0-9a-f-]{36}$/)
+    expect(wrapper.text()).toContain('当前有效 86400 秒')
+    // Out-of-range input is blocked before any request.
+    postedPath = ''
+    await wrapper.get('#window-seconds-c1').setValue('59')
+    await wrapper.get('#window-reason-c1').setValue('太短')
+    await wrapper.findAll('button').find(item => item.text() === '保存窗口')!.trigger('click'); await flushPromises()
+    expect(postedPath).toBe('')
+    expect(wrapper.text()).toContain('轮换窗口必须为 60–604800 秒')
+  })
+
   it('rejects duplicate callback URIs before any registration request', async () => {
     const fetcher = vi.fn(async (path: string, _init?: RequestInit) => path === '/api/session/me' ? body(appAdmin) : body([]))
     vi.stubGlobal('fetch', fetcher)

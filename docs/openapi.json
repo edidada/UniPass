@@ -1864,6 +1864,87 @@
         }
       }
     },
+    "/api/admin/console/clients/{clientId}/rotation-window": {
+      "get": {
+        "operationId": "getClientRotationWindow",
+        "description": "Per-client secret rotation overlap window. seconds=null means the global unipass.clients.secret-rotation-window applies; effectiveSeconds is the value actually used by rotation.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current effective rotation window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRotationWindow"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      },
+      "post": {
+        "operationId": "setClientRotationWindow",
+        "description": "Sets or clears a per-client rotation window (60-604800 seconds, null restores the global default). Requires an application administrator, recent password/MFA, a reason and an idempotency key. Setting a window never changes the current secret, previous generations, enabled state or the delete tombstone; deleted clients are rejected with 409.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{16,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientRotationWindowRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Window saved (or replayed idempotently)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRotationWindow"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
     "/api/admin/console/audit/archive": {
       "get": {
         "operationId": "listAuditArchiveBatches",
@@ -2716,6 +2797,53 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ClientRotationWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seconds",
+          "effectiveSeconds"
+        ],
+        "properties": {
+          "seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 60,
+            "maximum": 604800,
+            "description": "Per-client override; null means the global default."
+          },
+          "effectiveSeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 604800
+          }
+        }
+      },
+      "ClientRotationWindowRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seconds",
+          "reason"
+        ],
+        "properties": {
+          "seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 60,
+            "maximum": 604800
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
           }
         }
       },

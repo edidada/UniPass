@@ -465,5 +465,36 @@ class ClientManagementHttpIT {
         assertEquals(403, get(auditor, "/api/admin/console/clients/crm/history").statusCode());
     }
 
+    @Test void perClientRotationWindowIsBoundedAndAppliedByRotation() throws Exception {
+        HttpClient admin = administrator("ROLE_ADMIN_APP");
+        registerConfidential(admin, "crm");
+        var set = adminJson(admin, "/api/admin/console/clients/crm/rotation-window",
+                Map.of("seconds", 300, "reason", "短窗口"), "window-http-key-01");
+        assertEquals(200, set.statusCode(), set.body());
+        JsonNode window = json.readTree(set.body());
+        assertEquals(300, window.get("seconds").asInt());
+        assertEquals(300, window.get("effectiveSeconds").asInt());
+        var rotated = adminJson(admin, "/api/admin/console/clients/crm/rotate",
+                Map.of("reason", "按窗口轮换"), "window-http-rotate-1");
+        assertEquals(200, rotated.statusCode(), rotated.body());
+        Instant until = Instant.parse(json.readTree(rotated.body()).get("previousSecretValidUntil").asText());
+        long seconds = Duration.between(Instant.now(), until).getSeconds();
+        assertTrue(seconds >= 290 && seconds <= 310, "per-client window must drive the overlap: " + seconds);
+        // Clearing the per-client value falls back to the global 24h default.
+        Map<String, Object> clear = new HashMap<>();
+        clear.put("seconds", null);
+        clear.put("reason", "恢复全局");
+        var cleared = adminJson(admin, "/api/admin/console/clients/crm/rotation-window", clear, "window-http-key-02");
+        assertEquals(200, cleared.statusCode(), cleared.body());
+        JsonNode clearedNode = json.readTree(cleared.body());
+        assertTrue(clearedNode.get("seconds").isNull());
+        assertEquals(86400, clearedNode.get("effectiveSeconds").asInt());
+        assertEquals(400, adminJson(admin, "/api/admin/console/clients/crm/rotation-window",
+                Map.of("seconds", 59, "reason", "太短"), UUID.randomUUID().toString()).statusCode());
+        HttpClient auditor = administrator("ROLE_ADMIN_AUDIT");
+        assertEquals(403, adminJson(auditor, "/api/admin/console/clients/crm/rotation-window",
+                Map.of("seconds", 300, "reason", "越权"), UUID.randomUUID().toString()).statusCode());
+    }
+
     @AfterAll void stop() throws Exception { if (redis != null && redis.isAlive()) redis.destroy(); if (postgres != null) postgres.close(); }
 }
