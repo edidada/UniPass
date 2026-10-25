@@ -13,11 +13,12 @@ import java.time.Clock;
 import java.util.*;
 
 /**
- * Accepts the single recorded previous client secret while its overlap window
- * is open. The built-in provider always runs first and owns the current secret;
+ * Accepts any recorded previous client secret while its own overlap window is
+ * open. The built-in provider always runs first and owns the current secret;
  * this provider only participates when the presented secret failed there, so a
- * rotation never locks a client out during rollout. Expired entries are ignored
- * on read and removed by the rotation transaction.
+ * rotation never locks a client out during rollout. Successive rotations keep
+ * multiple generations, each with its original deadline; expired entries are
+ * ignored on read and removed by the rotation transaction.
  */
 final class PreviousClientSecretAuthenticationProvider implements AuthenticationProvider {
     private static final PasswordEncoder ENCODER = PasswordEncoderFactories.createDelegatingPasswordEncoder();

@@ -371,10 +371,14 @@ public final class ClientAdminService {
             if (!fresh) throw new ResponseStatusException(HttpStatus.CONFLICT, "Secret already issued for this idempotency key");
             Instant now = clock.instant();
             Instant until = now.plus(overlap);
+            // Multi-generation: append the retiring verifier and keep earlier generations
+            // until their own original deadlines. A later rotation must never extend or
+            // restore an older generation, so only already-expired rows are removed.
+            jdbc.update("DELETE FROM oauth_client_secret_previous WHERE client_id=? AND valid_until<=?",
+                    clientId, Timestamp.from(now));
             jdbc.update("""
-                    INSERT INTO oauth_client_secret_previous(client_id,secret_hash,valid_until,created_at)
-                    VALUES (?,?,?,?) ON CONFLICT (client_id) DO UPDATE
-                    SET secret_hash=excluded.secret_hash,valid_until=excluded.valid_until,created_at=excluded.created_at
+                    INSERT INTO oauth_client_secret_previous(id,client_id,secret_hash,valid_until,created_at)
+                    VALUES (gen_random_uuid(),?,?,?,?)
                     """, clientId, client.getClientSecret(), Timestamp.from(until), Timestamp.from(now));
             String secret = secret();
             clients.save(RegisteredClient.from(client).clientSecret(
