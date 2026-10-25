@@ -130,6 +130,11 @@ class ClientManagementHttpIT {
     private HttpResponse<String> get(HttpClient client, String path) throws Exception {
         return client.send(HttpRequest.newBuilder(uri(path)).GET().build(), HttpResponse.BodyHandlers.ofString());
     }
+
+    private HttpResponse<String> getBearer(String path, String token) throws Exception {
+        return browser().send(HttpRequest.newBuilder(uri(path)).header("Authorization", "Bearer " + token)
+                .GET().build(), HttpResponse.BodyHandlers.ofString());
+    }
     private HttpResponse<String> post(HttpClient client, String path, Map<String, String> form, String clientId) throws Exception {
         String body = form.entrySet().stream().map(e -> enc(e.getKey()) + "=" + enc(e.getValue())).collect(java.util.stream.Collectors.joining("&"));
         var request = HttpRequest.newBuilder(uri(path)).header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString(body));
@@ -521,6 +526,22 @@ class ClientManagementHttpIT {
         assertEquals(200, csv.statusCode(), csv.body());
         assertTrue(csv.body().contains("203.0.113.0/24"));
         assertFalse(csv.body().contains("203.0.113.9"));
+    }
+
+    @Test void disableRevokesAccessTokenAtResourceEndpointWithinFiveSeconds() throws Exception {
+        HttpClient admin = administrator("ROLE_SYSTEM_ADMIN");
+        String secret = registerConfidential(admin, "crm");
+        JsonNode tokens = tokensFor(admin, "crm", secret);
+        String access = tokens.get("access_token").asText();
+        assertEquals(200, getBearer("/oauth/userinfo", access).statusCode(), "token must be usable before disable");
+        long start = System.nanoTime();
+        var disable = adminJson(admin, "/api/admin/console/clients/crm/state",
+                Map.of("enabled", false, "reason", "停用吊销时延"), UUID.randomUUID().toString());
+        assertEquals(204, disable.statusCode(), disable.body());
+        var after = getBearer("/oauth/userinfo", access);
+        long elapsedMillis = Duration.ofNanos(System.nanoTime() - start).toMillis();
+        assertEquals(401, after.statusCode(), after.body());
+        assertTrue(elapsedMillis < 5000, "revocation exceeded five seconds: " + elapsedMillis + "ms");
     }
 
     @AfterAll void stop() throws Exception { if (redis != null && redis.isAlive()) redis.destroy(); if (postgres != null) postgres.close(); }
