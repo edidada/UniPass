@@ -405,5 +405,29 @@ class ClientManagementHttpIT {
         assertTrue(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id='family-crm'", Boolean.class));
     }
 
+    @Test void deleteSoftRemovesTheClientAndBlocksProtocolEndpoints() throws Exception {
+        HttpClient admin = administrator("ROLE_SYSTEM_ADMIN");
+        String sCrm = registerConfidential(admin, "crm");
+        // Delete with an idempotency key.
+        var delete = adminJson(admin, "/api/admin/console/clients/crm/delete", Map.of("reason", "不再需要"), "delete-http-key-0001");
+        assertEquals(204, delete.statusCode(), delete.body());
+        // The client disappears from the management list.
+        var list = get(admin, "/api/admin/console/clients");
+        assertEquals(200, list.statusCode());
+        assertTrue(json.readTree(list.body()).findValuesAsText("clientId").stream().noneMatch(id -> id.equals("crm")));
+        // Protocol endpoints still refuse the deleted client with 401 invalid_client.
+        assertEquals(401, authorizeStatus(admin, "crm", "v".repeat(64)));
+        assertEquals(401, introspectStatus(admin, "crm", sCrm));
+        // Re-enabling a deleted client is refused: deletion is irreversible.
+        assertEquals(409, adminJson(admin, "/api/admin/console/clients/crm/state", Map.of("enabled", true, "reason", "复活"), UUID.randomUUID().toString()).statusCode());
+        // Replaying the same idempotency key succeeds without re-applying or re-exposing anything.
+        var replay = adminJson(admin, "/api/admin/console/clients/crm/delete", Map.of("reason", "不再需要"), "delete-http-key-0001");
+        assertEquals(204, replay.statusCode(), replay.body());
+        // Audit carries the reason but never the secret.
+        String detail = jdbc.queryForObject("SELECT detail FROM auth_audit WHERE action='CLIENT_DELETED' AND detail->>'client_id'=?", String.class, "crm");
+        assertNotNull(detail);
+        assertFalse(detail.contains(sCrm));
+    }
+
     @AfterAll void stop() throws Exception { if (redis != null && redis.isAlive()) redis.destroy(); if (postgres != null) postgres.close(); }
 }

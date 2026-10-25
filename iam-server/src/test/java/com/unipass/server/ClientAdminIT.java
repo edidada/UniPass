@@ -252,6 +252,45 @@ class ClientAdminIT {
         assertEquals(400, rejected(() -> service.setEnabled(operator(), "crm", false, "坏键", "short")).getStatusCode().value());
     }
 
+    @Test void deleteSoftRemovesTheClientBlocksRevivalAndIsIdempotent() {
+        service.register(operator(), registration("crm", "CONFIDENTIAL"));
+        String crmId = jdbc.queryForObject("SELECT id FROM oauth2_registered_client WHERE client_id='crm'", String.class);
+        jdbc.update("""
+                INSERT INTO oauth2_authorization(id,registered_client_id,principal_name,authorization_grant_type,authorized_scopes,attributes)
+                VALUES ('family-del',?,?,'authorization_code','openid','')
+                """, crmId, OPERATOR.toString());
+        service.delete(operator(), "crm", "不再需要", "delete-unit-key-0001", "203.0.113.10");
+        // The management list no longer exposes the tombstone.
+        assertTrue(service.list().stream().noneMatch(s -> s.clientId().equals("crm")));
+        // The status row records the tombstone while remaining disabled.
+        assertTrue(jdbc.queryForObject("SELECT disabled FROM oauth_client_status WHERE client_id='crm'", Boolean.class));
+        assertNotNull(jdbc.queryForObject("SELECT deleted_at FROM oauth_client_status WHERE client_id='crm'", Timestamp.class));
+        assertEquals("203.0.113.10", jdbc.queryForObject("SELECT source_ip FROM auth_audit WHERE action='CLIENT_DELETED'", String.class));
+        // The real authorization family is revoked with the registration id.
+        assertTrue(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id='family-del'", Boolean.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_DELETED'", Integer.class));
+        // Same key + same reason replays successfully without re-auditing or re-recording the action.
+        assertDoesNotThrow(() -> service.delete(operator(), "crm", "不再需要", "delete-unit-key-0001"));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM auth_audit WHERE action='CLIENT_DELETED'", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM admin_client_action WHERE action='DELETE'", Integer.class));
+        // Same key + different reason conflicts; a brand-new key on a deleted client also conflicts.
+        assertEquals(409, rejected(() -> service.delete(operator(), "crm", "另一个原因", "delete-unit-key-0001")).getStatusCode().value());
+        assertEquals(409, rejected(() -> service.delete(operator(), "crm", "新键删除", "delete-unit-key-0002")).getStatusCode().value());
+        // Deletion wins over enabled: enable and disable are both refused.
+        assertEquals(409, rejected(() -> service.setEnabled(operator(), "crm", true, "复活", "enable-del-000001")).getStatusCode().value());
+        assertEquals(409, rejected(() -> service.setEnabled(operator(), "crm", false, "再停用", "disable-del-0001")).getStatusCode().value());
+        // An unrelated client is unaffected.
+        service.register(operator(), registration("hrm", "CONFIDENTIAL"));
+        assertEquals(1, service.list().stream().filter(s -> s.clientId().equals("hrm")).count());
+        // Unknown client, short key, blank reason and missing authority are all rejected.
+        assertEquals(404, rejected(() -> service.delete(operator(), "missing", "原因", "delete-missing-0001")).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.delete(operator(), "crm", "原因", "short")).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.delete(operator(), "crm", " ", "delete-empty-reason")).getStatusCode().value());
+        assertEquals(403, rejected(() -> service.delete(principal(NON_ADMIN, List.of("ROLE_USER")), "crm", "原因", "delete-noauth-0001")).getStatusCode().value());
+        // The registration row is preserved (no physical deletion).
+        assertNotNull(jdbc.queryForObject("SELECT id FROM oauth2_registered_client WHERE client_id='crm'", String.class));
+    }
+
     @Test void auditorReadsAuditButCannotChangeRolesOrClients() {
         var console = new AdminConsoleService(jdbc, tx, accounts, new AdminAuditService(jdbc, java.time.Clock.systemUTC()), null, java.time.Clock.systemUTC());
         IdentityPrincipal auditor = principal(AUDITOR, List.of("ROLE_ADMIN_AUDIT"));

@@ -96,6 +96,48 @@ describe('application management', () => {
     expect(wrapper.text()).toContain('已停用')
   })
 
+  it('deletes an application only after an exact id confirmation and a reason, then removes it from the list', async () => {
+    let postedPath = ''; let postedBody: Record<string, unknown> = {}; let postedKey = ''
+    let list = [confidential, native]
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/api/session/me') return body(appAdmin)
+      if (path === '/api/public/csrf') return body(csrf)
+      if (path.endsWith('/delete') && init?.method === 'POST') {
+        postedPath = path; postedBody = JSON.parse(String(init.body)) as Record<string, unknown>
+        postedKey = (init.headers as Record<string, string>)['Idempotency-Key']!
+        list = list.filter(item => item.clientId !== 'crm')
+        return body(null, 204)
+      }
+      if (path === '/api/admin/console/clients') return body(list)
+      return body({ error: 'MUST_NOT_CALL' })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    const deleteButtons = wrapper.findAll('button').filter(button => button.text() === '删除应用')
+    expect(deleteButtons).toHaveLength(2)
+    await deleteButtons[0]!.trigger('click')
+    await wrapper.get(`input[aria-label="删除 crm 的原因"]`).setValue('不再需要')
+    const confirm = wrapper.findAll('button').find(button => button.text() === '确认删除')!
+    // Confirm is locked until the exact client id is typed.
+    expect(confirm.attributes('disabled')).toBeDefined()
+    await wrapper.get(`input[aria-label="输入 crm 以确认删除"]`).setValue('wrong')
+    expect(confirm.attributes('disabled')).toBeDefined()
+    // While the confirmation id is wrong no delete request may leave the page.
+    expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(0)
+    await wrapper.get(`input[aria-label="输入 crm 以确认删除"]`).setValue('crm')
+    expect(confirm.attributes('disabled')).toBeUndefined()
+    await confirm.trigger('click'); await flushPromises()
+    expect(postedPath).toBe('/api/admin/console/clients/crm/delete')
+    expect(postedBody).toEqual({ reason: '不再需要' })
+    expect(postedKey).toMatch(/^[0-9a-f-]{36}$/)
+    // The deleted application is gone from the list and no one-time secret surfaced.
+    expect(wrapper.text()).not.toContain('CRM')
+    expect(wrapper.find('[data-testid="issued-secret"]').exists()).toBe(false)
+    const leakedFrom = (storage: Storage | undefined) => storage ? Object.keys(storage).some(k => (storage.getItem(k) ?? '').includes('A'.repeat(43))) : false
+    expect(leakedFrom(typeof localStorage !== 'undefined' ? localStorage : undefined)).toBe(false)
+    expect(leakedFrom(typeof sessionStorage !== 'undefined' ? sessionStorage : undefined)).toBe(false)
+  })
+
   it('does not disable when the confirmation id does not match the client id', async () => {
     const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       if (path === '/api/session/me') return body(appAdmin)

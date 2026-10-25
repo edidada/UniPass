@@ -1774,6 +1774,50 @@
         }
       }
     },
+    "/api/admin/console/clients/{clientId}/delete": {
+      "post": {
+        "operationId": "deleteManagedClient",
+        "description": "Soft-deletes an application irreversibly: writes a tombstone (deleted_at/deleted_by/delete_reason), keeps disabled=true, revokes every existing authorization family by the registered client UUID, hides the client from the management list, and audits CLIENT_DELETED in the same transaction. A deleted client can never be enabled or disabled again (409) and the registration row is preserved (no physical deletion). Idempotent per key: a same-key/same-reason replay succeeds without re-applying or duplicating the audit; the same key with a different reason, or a new key on an already-deleted client, returns 409.",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{16,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientDeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Soft-deleted and audited (or replayed idempotently)"
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
     "/api/admin/console/audit/archive": {
       "get": {
         "operationId": "listAuditArchiveBatches",
@@ -2562,6 +2606,20 @@
           "enabled": {
             "type": "boolean"
           },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      },
+      "ClientDeleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
           "reason": {
             "type": "string",
             "minLength": 1,
