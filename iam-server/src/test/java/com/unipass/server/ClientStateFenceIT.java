@@ -117,7 +117,11 @@ class ClientStateFenceIT {
     }
 
     private OAuth2ClientAuthenticationToken presented(String clientId, String secret, Map<String, Object> params) {
-        return new OAuth2ClientAuthenticationToken(clientId, ClientAuthenticationMethod.CLIENT_SECRET_POST, secret, params);
+        // Registered confidential clients only support client_secret_basic (see
+        // ClientRegistrationService.builder); present the additional parameters
+        // under that method rather than CLIENT_SECRET_POST so the provider's method
+        // check passes and the PKCE verifier is actually exercised.
+        return new OAuth2ClientAuthenticationToken(clientId, ClientAuthenticationMethod.CLIENT_SECRET_BASIC, secret, params);
     }
 
     @Test void disabledClientWithValidSecretIsRejectedButEnabledSucceeds() {

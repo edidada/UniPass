@@ -15,6 +15,7 @@ import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientAuthenticationToken;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
@@ -70,6 +71,21 @@ final class FencedClientSecretAuthenticationProvider implements AuthenticationPr
                 && !ClientAuthenticationMethod.CLIENT_SECRET_POST.equals(method)) return null;
         if (!(token.getPrincipal() instanceof String clientId) || clientId.isBlank()) return null;
         if (!(token.getCredentials() instanceof String secret) || secret.isBlank()) return null;
+        // This provider runs inside the ambient /oauth/token transaction opened by
+        // TokenTransactionFilter. We must NOT start a nested REQUIRED transaction here:
+        // an OAuth2AuthenticationException raised by fence(...) would mark that outer
+        // transaction rollback-only, and when the outer filter later commits it throws
+        // UnexpectedRollbackException, which TokenTransactionFilter turns into a 503.
+        // When an outer transaction is already active, run fence(...) directly so the
+        // row lock is held by that ambient transaction until the token is issued
+        // (preserving the fence semantics) and the thrown exception stays clean for SAS
+        // to translate into 401/400. We deliberately avoid REQUIRES_NEW, which would
+        // release the lock before the token is issued and break the fence. Only when
+        // called with no active transaction (direct unit tests, other endpoints) do we
+        // open our own transaction via tx.execute.
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            return fence(clientId, secret, token);
+        }
         return tx.execute(status -> fence(clientId, secret, token));
     }
 
