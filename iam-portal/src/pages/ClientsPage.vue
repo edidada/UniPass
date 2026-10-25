@@ -11,6 +11,7 @@ const clientId = ref(''); const name = ref(''); const kind = ref<'CONFIDENTIAL' 
 const redirects = ref(''); const logoutRedirects = ref(''); const backchannel = ref(''); const reason = ref('')
 const rotateTarget = ref(''); const rotateReason = ref('')
 const stateTarget = ref(''); const stateReason = ref(''); const stateConfirm = ref('')
+const deleteTarget = ref(''); const deleteReason = ref(''); const deleteConfirm = ref('')
 const editTarget = ref(''); const editName = ref(''); const editRedirects = ref(''); const editLogout = ref(''); const editBackchannel = ref(''); const editReason = ref('')
 const isOperator = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_APP') ?? false
 
@@ -91,6 +92,18 @@ async function toggleState(client: ClientSummary) {
     stateTarget.value = ''; stateReason.value = ''; stateConfirm.value = ''; await load()
   } catch (failure) { error.value = message(failure) } finally { busy.value = false; stateConfirm.value = '' }
 }
+async function remove(client: ClientSummary) {
+  if (busy.value || deleteTarget.value !== client.clientId) return
+  if (!deleteReason.value.trim()) { error.value = '请填写删除原因。'; return }
+  busy.value = true; error.value = ''; notice.value = ''
+  try {
+    await post(`/api/admin/console/clients/${client.clientId}/delete`,
+      { reason: deleteReason.value.trim() }, crypto.randomUUID())
+    notice.value = '应用已删除，删除不可恢复。'
+    deleteTarget.value = ''; deleteReason.value = ''; deleteConfirm.value = ''
+    clients.value = clients.value.filter(item => item.clientId !== client.clientId)
+  } catch (failure) { error.value = message(failure) } finally { busy.value = false; deleteConfirm.value = '' }
+}
 onMounted(() => window.addEventListener('pagehide', onPageHide))
 onBeforeUnmount(() => { window.removeEventListener('pagehide', onPageHide); dismiss() })
 </script>
@@ -109,8 +122,9 @@ onBeforeUnmount(() => { window.removeEventListener('pagehide', onPageHide); dism
       <p class="muted">机密客户端密钥以单向哈希保存；轮换时旧密钥只在受控窗口内保留。</p>
       <ul class="session-list"><li v-for="client in clients" :key="client.id"><div><h3>{{ client.name }} <span class="badge">{{ client.kind }}</span> <span class="badge" :class="client.enabled ? 'good' : ''">{{ client.enabled ? '启用' : '已停用' }}</span></h3><p><code>{{ client.clientId }}</code> · 登记于 {{ new Date(client.issuedAt).toLocaleString() }}</p><p class="muted">回调：{{ client.redirectUris.join('、') || '无' }}</p><p class="muted">scope：{{ client.scopes.join(' ') }}</p>
         <p v-if="stateTarget === client.clientId" class="actions"><input v-model="stateReason" :aria-label="(client.enabled ? '停用 ' : '启用 ') + client.clientId + ' 的原因'" placeholder="操作原因" maxlength="500" /><input v-if="client.enabled" v-model="stateConfirm" :aria-label="'输入 ' + client.clientId + ' 以确认停用'" :placeholder="client.clientId" autocomplete="off" spellcheck="false" /><button :class="client.enabled ? 'danger' : ''" :disabled="busy || (client.enabled && stateConfirm !== client.clientId)" @click="toggleState(client)">{{ client.enabled ? '确认停用' : '确认启用' }}</button><button class="secondary" :disabled="busy" @click="stateTarget = ''; stateConfirm = ''">取消</button></p>
+        <p v-else-if="deleteTarget === client.clientId" class="actions"><input v-model="deleteReason" :aria-label="'删除 ' + client.clientId + ' 的原因'" placeholder="删除原因" maxlength="500" /><input v-model="deleteConfirm" :aria-label="'输入 ' + client.clientId + ' 以确认删除'" :placeholder="client.clientId" autocomplete="off" spellcheck="false" /><button class="danger" :disabled="busy || deleteConfirm !== client.clientId" @click="remove(client)">确认删除</button><button class="secondary" :disabled="busy" @click="deleteTarget = ''; deleteConfirm = ''; deleteReason = ''">取消</button></p>
         <p v-else-if="rotateTarget === client.clientId" class="actions"><input v-model="rotateReason" :aria-label="'轮换 ' + client.clientId + ' 的原因'" placeholder="轮换原因" maxlength="500" /><button :disabled="busy" @click="rotate">确认轮换</button><button class="secondary" :disabled="busy" @click="rotateTarget = ''">取消</button></p>
-        <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button></p>
+        <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button><button class="danger" :disabled="busy" @click="deleteTarget = client.clientId">删除应用</button></p>
         <form v-if="editTarget === client.clientId" @submit.prevent="saveEdit">
           <p><label :for="'edit-name-' + client.id">显示名称</label><input :id="'edit-name-' + client.id" v-model="editName" maxlength="200" /></p>
           <p><label :for="'edit-redirects-' + client.id">回调地址（每行一个）</label><textarea :id="'edit-redirects-' + client.id" v-model="editRedirects" spellcheck="false"></textarea></p>

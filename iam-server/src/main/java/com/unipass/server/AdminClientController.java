@@ -43,6 +43,12 @@ public final class AdminClientController {
         clients.setEnabled(principal, clientId, change.enabled, change.reason, key, proxies.resolve(request));
     }
 
+    @PostMapping("/{clientId}/delete") @ResponseStatus(HttpStatus.NO_CONTENT)
+    void delete(@AuthenticationPrincipal IdentityPrincipal principal, @PathVariable String clientId,
+            @RequestHeader("Idempotency-Key") String key, @RequestBody DeleteRequest body, HttpServletRequest request) {
+        clients.delete(principal, clientId, body.reason, key, proxies.resolve(request));
+    }
+
     public static final class Rotation {
         @com.fasterxml.jackson.annotation.JsonProperty("reason") public String reason;
         @Override public String toString() { return "Rotation[REDACTED]"; }
@@ -52,5 +58,10 @@ public final class AdminClientController {
         @com.fasterxml.jackson.annotation.JsonProperty("enabled") public boolean enabled;
         @com.fasterxml.jackson.annotation.JsonProperty("reason") public String reason;
         @Override public String toString() { return "StateChange[REDACTED]"; }
+    }
+
+    public static final class DeleteRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("reason") public String reason;
+        @Override public String toString() { return "DeleteRequest[REDACTED]"; }
     }
 }

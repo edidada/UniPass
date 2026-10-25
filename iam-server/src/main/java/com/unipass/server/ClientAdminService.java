@@ -76,9 +76,15 @@ public final class ClientAdminService {
 
     public List<Summary> list() {
         Map<String, Boolean> disabled = new HashMap<>();
-        jdbc.query("SELECT client_id,disabled FROM oauth_client_status", r -> { disabled.put(r.getString(1), r.getBoolean(2)); });
+        Set<String> deleted = new HashSet<>();
+        jdbc.query("SELECT client_id,disabled,deleted_at IS NOT NULL AS deleted FROM oauth_client_status",
+                (org.springframework.jdbc.core.RowCallbackHandler) r -> {
+                    disabled.put(r.getString(1), r.getBoolean(2));
+                    if (r.getBoolean(3)) deleted.add(r.getString(1));
+                });
         List<Summary> all = new ArrayList<>();
         for (String id : jdbc.queryForList("SELECT client_id FROM oauth2_registered_client ORDER BY client_id", String.class)) {
+            if (deleted.contains(id)) continue; // tombstones stay out of the management list
             RegisteredClient client = clients.findByClientId(id);
             if (client == null) continue;
             all.add(new Summary(client.getId(), client.getClientId(), client.getClientName(), kind(client),
@@ -90,6 +96,64 @@ public final class ClientAdminService {
                     client.getClientIdIssuedAt()));
         }
         return all;
+    }
+
+    /** Returns true when the client carries a soft-delete tombstone; used to block revival. */
+    private boolean isDeleted(String clientId) {
+        return Boolean.TRUE.equals(jdbc.query("SELECT deleted_at IS NOT NULL FROM oauth_client_status WHERE client_id=?",
+                (org.springframework.jdbc.core.ResultSetExtractor<Boolean>) r -> r.next() ? r.getBoolean(1) : Boolean.FALSE, clientId));
+    }
+
+    /**
+     * Soft-deletes an application: an irreversible tombstone is written, the client is
+     * disabled, its active authorizations are revoked, and the action is audited. The
+     * registration and audit rows are kept (no physical deletion). Replays of the same
+     * idempotency key succeed without re-applying; a different reason on the same key or
+     * any attempt on an already-deleted client conflicts.
+     */
+    public void delete(IdentityPrincipal principal, String clientId, String reason, String key) {
+        delete(principal, clientId, reason, key, null);
+    }
+
+    public void delete(IdentityPrincipal principal, String clientId, String reason, String key, String sourceIp) {
+        requireRecentAuthority(principal);
+        requireReason(reason);
+        if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency key required");
+        tx.executeWithoutResult(status -> {
+            accounts.lockAndRequire(principal);
+            requireAppAdmin(principal);
+            RegisteredClient client = locked(clientId);
+            UUID actionId = UUID.randomUUID();
+            boolean fresh = jdbc.update("""
+                    INSERT INTO admin_client_action(id,actor_id,client_id,action,idempotency_key,reason,created_at)
+                    VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING
+                    """, actionId, principal.getUserId(), clientId, "DELETE", key, reason, Timestamp.from(clock.instant())) == 1;
+            if (!fresh) {
+                String stored = jdbc.query("""
+                        SELECT reason FROM admin_client_action
+                        WHERE actor_id=? AND client_id=? AND action=? AND idempotency_key=?
+                        """, (org.springframework.jdbc.core.ResultSetExtractor<String>) r -> {
+                    if (!r.next()) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
+                    return r.getString(1);
+                }, principal.getUserId(), clientId, "DELETE", key);
+                if (!reason.equals(stored)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
+                return; // same key and reason: success without re-applying the change
+            }
+            // A different key reached deletion first; do not delete again.
+            if (isDeleted(clientId)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Client deleted");
+            jdbc.update("""
+                    INSERT INTO oauth_client_status(client_id,disabled,deleted_at,deleted_by,delete_reason,reason,updated_at)
+                    VALUES (?,true,?,?,?,?,?) ON CONFLICT (client_id) DO UPDATE
+                    SET disabled=true, deleted_at=excluded.deleted_at, deleted_by=excluded.deleted_by,
+                        delete_reason=excluded.delete_reason, reason=COALESCE(oauth_client_status.reason, excluded.delete_reason),
+                        updated_at=excluded.updated_at
+                    """, clientId, Timestamp.from(clock.instant()), principal.getUserId(), reason, reason, Timestamp.from(clock.instant()));
+            // Revoke the real authorization families using the locked registration id, not the client id.
+            jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE registered_client_id=? AND revoked=false", client.getId());
+            audit.record("CLIENT_DELETED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
+                    clientId, actionId, Map.of("client_id", clientId, "reason", reason), sourceIp);
+        });
     }
 
     private static String kind(RegisteredClient client) {
@@ -154,6 +218,8 @@ public final class ClientAdminService {
             accounts.lockAndRequire(principal);
             requireAppAdmin(principal);
             RegisteredClient client = locked(clientId);
+            // A soft-deleted client can never be enabled or disabled again; deletion wins over enabled.
+            if (isDeleted(clientId)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Client deleted");
             String action = enabled ? "ENABLE" : "DISABLE";
             UUID actionId = UUID.randomUUID();
             boolean fresh = jdbc.update("""
