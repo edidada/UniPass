@@ -47,7 +47,7 @@ class ClientManagementHttpIT {
     @LocalServerPort int port;
     @Autowired JdbcTemplate jdbc;
     @Autowired RegisteredClientRepository clients;
-    @Autowired FakeDirectory directory;
+    @Autowired OidcFlowIT.FakeDirectory directory;
     @Autowired PasswordReauthentication reauthentication;
     @Autowired DigestAuthorizationService authorizations;
     @Autowired MfaService mfa;
