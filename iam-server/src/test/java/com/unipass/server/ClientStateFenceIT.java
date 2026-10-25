@@ -123,18 +123,18 @@ class ClientStateFenceIT {
     @Test void disabledClientWithValidSecretIsRejectedButEnabledSucceeds() {
         String secret = service.register(operator(), registration("crm")).secret();
         assertNotNull(fenced.authenticate(presented("crm", secret)), "enabled client authenticates");
-        service.setEnabled(operator(), "crm", false, "疑似泄露", "disable-fence-1");
+        service.setEnabled(operator(), "crm", false, "疑似泄露", "disable-fence-0001");
         OAuth2AuthenticationException rejected = assertThrows(OAuth2AuthenticationException.class,
                 () -> fenced.authenticate(presented("crm", secret)));
         assertEquals(OAuth2ErrorCodes.INVALID_CLIENT, rejected.getError().getErrorCode(), "disabled client must fail closed");
         // Re-enabling restores authentication.
-        service.setEnabled(operator(), "crm", true, "误报解除", "enable-fence-1");
+        service.setEnabled(operator(), "crm", true, "误报解除", "enable-fence-0001");
         assertNotNull(fenced.authenticate(presented("crm", secret)), "re-enabled client authenticates again");
     }
 
     @Test void previousSecretWorksInsideWindowAndFailsAfterItCloses() {
         String first = service.register(operator(), registration("crm")).secret();
-        String current = service.rotate(operator(), "crm", "季度轮换", "rotate-fence-1").secret();
+        String current = service.rotate(operator(), "crm", "季度轮换", "rotate-fence-0001").secret();
         assertNotNull(fenced.authenticate(presented("crm", current)), "current secret authenticates");
         assertNotNull(fenced.authenticate(presented("crm", first)), "previous secret authenticates inside window");
         now.updateAndGet(v -> v.plus(overlap).plusSeconds(1));
@@ -155,16 +155,25 @@ class ClientStateFenceIT {
         CountDownLatch aCommit = new CountDownLatch(1);
         CountDownLatch bDone = new CountDownLatch(1);
         AtomicReference<OAuth2AuthenticationException> bError = new AtomicReference<>();
-        Thread a = new Thread(() -> lockTx.execute(status -> {
-            jdbc.query("SELECT id FROM oauth2_registered_client WHERE client_id=? FOR UPDATE", String.class, "crm");
-            jdbc.update("""
+        AtomicReference<Throwable> aError = new AtomicReference<>();
+        Thread a = new Thread(() -> {
+            try {
+                lockTx.execute(status -> {
+                    jdbc.queryForList("SELECT id FROM oauth2_registered_client WHERE client_id=? FOR UPDATE", String.class, "crm");
+                    jdbc.update("""
                     INSERT INTO oauth_client_status(client_id,disabled,reason,updated_at) VALUES (?,true,?,?)
                     ON CONFLICT (client_id) DO UPDATE SET disabled=true,reason=excluded.reason,updated_at=excluded.updated_at
                     """, "crm", "并发停用", java.sql.Timestamp.from(now.get()));
             aLocked.countDown();
             try { aCommit.await(20, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             return null;
-        }));
+                });
+            } catch (Throwable t) {
+                aError.set(t);
+            } finally {
+                aLocked.countDown();
+            }
+        });
         a.start();
         assertTrue(aLocked.await(20, TimeUnit.SECONDS), "disabler acquired the row lock");
         Thread b = new Thread(() -> {
@@ -181,6 +190,7 @@ class ClientStateFenceIT {
         assertEquals(OAuth2ErrorCodes.INVALID_CLIENT, bError.get().getError().getErrorCode());
         a.join(20_000);
         b.join(20_000);
+        assertNull(aError.get(), "disabler thread must not fail");
     }
 
     @Test void pkceIsEnforcedForAuthorizationCodeGrant() throws Exception {
