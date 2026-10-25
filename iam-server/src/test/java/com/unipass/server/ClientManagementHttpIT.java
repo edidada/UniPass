@@ -180,7 +180,7 @@ class ClientManagementHttpIT {
         byte[] secret = new byte[20]; new java.security.SecureRandom().nextBytes(secret);
         var cipher = new MfaSecretCipher(Base64.getEncoder().encodeToString(new byte[32]));
         jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled) VALUES (?,?,true) " +
-                "ON CONFLICT (user_id) DO UPDATE SET secret_cipher=excluded.secret_cipher, enabled=true, pending_expires_at=NULL, failed_attempts=0, locked_until=NULL",
+                "ON CONFLICT (user_id) DO UPDATE SET secret_cipher=excluded.secret_cipher, enabled=true, pending_expires_at=NULL, last_used_step=-1, failed_attempts=0, locked_until=NULL",
                 identity, cipher.encrypt(identity, secret)); return secret;
     }
     private void stepUp(HttpClient client, byte[] secret, Instant at) throws Exception {
