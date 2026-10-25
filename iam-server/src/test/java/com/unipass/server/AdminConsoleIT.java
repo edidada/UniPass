@@ -100,6 +100,17 @@ class AdminConsoleIT {
         Mockito.when(accounts.roles(TARGET)).thenReturn(List.of());
     }
 
+    @Test void auditorRedactionMasksAddressAndDropsLogin() {
+        var entry = new AdminAuditService.Entry(UUID.randomUUID(), now.get(), TARGET, "ROLE_GRANTED", "SUCCESS",
+                null, null, "203.0.113.9", Map.of("login", "secret-login", "operator", "actor"));
+        var redacted = AdminAuditService.redact(entry);
+        assertEquals("203.0.113.0/24", redacted.sourceIp());
+        assertFalse(redacted.detail().containsKey("login"));
+        assertEquals("secret-login", entry.detail().get("login"));
+        assertEquals("2001:db8:abcd::/48", AdminAuditService.maskSourceIp("2001:db8:abcd:12::1"));
+        assertEquals("redacted", AdminAuditService.maskSourceIp("not-an-address"));
+    }
+
     @Test void nonAdministratorIsRejectedBeforeAnyWrite() {
         IdentityPrincipal plain = new IdentityPrincipal(NON_ADMIN, 5, Instant.now(), List.of("ROLE_USER"), null,
                 IdentityPrincipal.Method.PASSWORD, Instant.now(), UUID.randomUUID());

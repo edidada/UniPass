@@ -22,14 +22,19 @@ public final class AdminConsoleController {
             @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "50") int limit) {
         console.requireAuditor(principal);
         if (limit < 1 || limit > 100) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size out of range");
-        try { return audit.page(cursor, limit); }
+        try {
+            AdminAuditService.Page page = audit.page(cursor, limit);
+            if (!console.isSystemAdmin(principal))
+                page = new AdminAuditService.Page(page.entries().stream().map(AdminAuditService::redact).toList(), page.nextCursor());
+            return page;
+        }
         catch (IllegalArgumentException e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cursor rejected"); }
     }
 
     @GetMapping(value = "/audit/export", produces = "text/csv")
     String export(@AuthenticationPrincipal IdentityPrincipal principal) {
         console.requireAuditor(principal);
-        return String.join("\n", audit.export(1000)) + "\n";
+        return String.join("\n", audit.export(1000, !console.isSystemAdmin(principal))) + "\n";
     }
 
     @GetMapping("/users/{id}/roles")

@@ -40,6 +40,11 @@ public final class AdminConsoleService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Audit authority required");
     }
 
+    /** Live check used to decide field-level audit redaction for the current viewer. */
+    public boolean isSystemAdmin(IdentityPrincipal principal) {
+        return accounts.roles(principal.getUserId()).contains("ROLE_SYSTEM_ADMIN");
+    }
+
     public List<String> roles(UUID target) {
         return jdbc.queryForList("SELECT role FROM iam_user_role WHERE user_id=? ORDER BY role", String.class, target);
     }

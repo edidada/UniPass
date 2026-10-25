@@ -62,6 +62,37 @@ public final class AdminAuditService {
 
     public record Page(List<Entry> entries, String nextCursor) { }
 
+    /** AUDITOR projection: mask the source address and drop the login identifier. */
+    public static Entry redact(Entry entry) {
+        Map<String, Object> detail = new LinkedHashMap<>(entry.detail());
+        detail.remove("login");
+        return new Entry(entry.id(), entry.createdAt(), entry.subject(), entry.action(), entry.result(),
+                entry.clientId(), entry.operationId(), maskSourceIp(entry.sourceIp()), detail);
+    }
+
+    /** Masks IPv4 to /24 and IPv6 to /48; malformed values never leak verbatim. */
+    public static String maskSourceIp(String ip) {
+        if (ip == null || ip.isBlank()) return ip;
+        try {
+            if (ip.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}")) {
+                String[] parts = ip.split("\\.");
+                return parts[0] + "." + parts[1] + "." + parts[2] + ".0/24";
+            }
+            if (ip.matches("[0-9A-Fa-f:]{2,45}") && ip.contains(":")) {
+                byte[] bytes = java.net.InetAddress.getByName(ip).getAddress();
+                if (bytes.length == 16) {
+                    int g0 = ((bytes[0] & 0xff) << 8) | (bytes[1] & 0xff);
+                    int g1 = ((bytes[2] & 0xff) << 8) | (bytes[3] & 0xff);
+                    int g2 = ((bytes[4] & 0xff) << 8) | (bytes[5] & 0xff);
+                    return Integer.toHexString(g0) + ":" + Integer.toHexString(g1) + ":" + Integer.toHexString(g2) + "::/48";
+                }
+            }
+            return "redacted";
+        } catch (RuntimeException | java.net.UnknownHostException e) {
+            return "redacted";
+        }
+    }
+
     /** Newest first, stable ties broken by id, opaque validated cursor. */
     public Page page(String cursor, int limit) {
         DecodedCursor decoded = DecodedCursor.parse(cursor);
@@ -82,7 +113,9 @@ public final class AdminAuditService {
     }
 
     /** Export is a separate permissionless-by-role read with a hard row cap and CSV formula-injection defense. */
-    public List<String> export(int cap) {
+    public List<String> export(int cap) { return export(cap, false); }
+
+    public List<String> export(int cap, boolean redact) {
         List<String> lines = new ArrayList<>();
         lines.add("created_at,user_id,action,result,client_id,operation_id,trace_id,source_ip");
         org.springframework.jdbc.core.RowCallbackHandler writer =
@@ -90,7 +123,8 @@ public final class AdminAuditService {
                         r.getString("created_at").replace(",", " "),
                         String.valueOf(r.getObject("user_id", UUID.class)),
                         cell(r.getString("action")), cell(r.getString("result")), cell(r.getString("client_id")),
-                        cell(r.getString("operation_id")), cell(r.getString("trace_id")), cell(r.getString("source_ip"))));
+                        cell(r.getString("operation_id")), cell(r.getString("trace_id")),
+                        cell(redact ? maskSourceIp(r.getString("source_ip")) : r.getString("source_ip"))));
         jdbc.query("SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id,source_ip FROM (SELECT id,created_at,user_id,action,result,client_id,operation_id,trace_id,source_ip FROM auth_audit ORDER BY created_at DESC, id DESC LIMIT ?) e ORDER BY created_at, id",
                 writer, cap);
         return lines;

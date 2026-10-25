@@ -58,6 +58,7 @@ class ClientManagementHttpIT {
     @Autowired EmailRecoveryService recovery;
     @Autowired RecoveryMailWorker mailWorker;
     @Autowired OidcFlowIT.TestMail mail;
+    @Autowired AdminAuditService audit;
     @Autowired org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
     @Autowired org.springframework.transaction.support.TransactionTemplate transactions;
     @Autowired RedisSecurityState securityState;
@@ -496,6 +497,30 @@ class ClientManagementHttpIT {
         HttpClient auditor = administrator("ROLE_ADMIN_AUDIT");
         assertEquals(403, adminJson(auditor, "/api/admin/console/clients/crm/rotation-window",
                 Map.of("seconds", 300, "reason", "越权"), UUID.randomUUID().toString()).statusCode());
+    }
+
+    @Test void auditorSeesRedactedAuditWhileSystemAdminSeesFullDetail() throws Exception {
+        HttpClient admin = administrator("ROLE_SYSTEM_ADMIN");
+        audit.record("ROLE_GRANTED", "SUCCESS", user, user, user, "crm", UUID.randomUUID(),
+                Map.of("login", "login-secret", "reason", "审计验证"), "203.0.113.9");
+        var full = get(admin, "/api/admin/console/audit?limit=100");
+        assertEquals(200, full.statusCode(), full.body());
+        assertTrue(full.body().contains("203.0.113.9"));
+        assertTrue(full.body().contains("login-secret"));
+        // Strip the admin role and re-login as a read-only auditor.
+        jdbc.update("DELETE FROM iam_user_role WHERE user_id=?", user);
+        jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,?)", user, "ROLE_ADMIN_AUDIT");
+        HttpClient auditor = browser();
+        login(auditor);
+        var masked = get(auditor, "/api/admin/console/audit?limit=100");
+        assertEquals(200, masked.statusCode(), masked.body());
+        assertTrue(masked.body().contains("203.0.113.0/24"));
+        assertFalse(masked.body().contains("203.0.113.9"));
+        assertFalse(masked.body().contains("login-secret"));
+        var csv = get(auditor, "/api/admin/console/audit/export");
+        assertEquals(200, csv.statusCode(), csv.body());
+        assertTrue(csv.body().contains("203.0.113.0/24"));
+        assertFalse(csv.body().contains("203.0.113.9"));
     }
 
     @AfterAll void stop() throws Exception { if (redis != null && redis.isAlive()) redis.destroy(); if (postgres != null) postgres.close(); }

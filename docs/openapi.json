@@ -1455,7 +1455,7 @@
     "/api/admin/console/audit": {
       "get": {
         "operationId": "listConsoleAudit",
-        "description": "Management console audit query (T8): newest first, stable ties broken by id, opaque Base64url cursor covering created_at and id. Requires ROLE_SYSTEM_ADMIN or the read-only ROLE_ADMIN_AUDIT. detail carries only the allowlisted keys role/reason/login/target_action/replay/operator; response never exposes source_ip.",
+        "description": "Management console audit query (T8): newest first, stable ties broken by id, opaque Base64url cursor covering created_at and id. Requires ROLE_SYSTEM_ADMIN or the read-only ROLE_ADMIN_AUDIT. detail carries only allowlisted keys; source_ip is included. A ROLE_ADMIN_AUDIT-only viewer receives source_ip masked to /24 (IPv4) or /48 (IPv6, malformed values become redacted) and without detail.login; ROLE_SYSTEM_ADMIN sees the full values.",
         "parameters": [
           {
             "name": "cursor",
@@ -1496,7 +1496,7 @@
     "/api/admin/console/audit/export": {
       "get": {
         "operationId": "exportConsoleAudit",
-        "description": "Audit export as CSV, capped at 1000 rows, same ROLE_SYSTEM_ADMIN/ROLE_ADMIN_AUDIT requirement. Trace/administrative fields only; columns are treated as static identifiers and cells are defensively filtered.",
+        "description": "Audit export as CSV, capped at 1000 rows, same ROLE_SYSTEM_ADMIN/ROLE_ADMIN_AUDIT requirement. Trace/administrative fields only; columns are treated as static identifiers and cells are defensively filtered. A ROLE_ADMIN_AUDIT-only viewer receives the masked source_ip (/24 IPv4, /48 IPv6); SYSTEM_ADMIN receives the original value.",
         "responses": {
           "200": {
             "description": "CSV, header line created_at,user_id,action,result,client_id,operation_id,trace_id",
