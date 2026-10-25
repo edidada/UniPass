@@ -41,3 +41,9 @@
 - 真正的用户运营操作面（查询/禁用/会话管理）及其细粒度权限。
 - 角色重命名迁移与双名兼容策略。
 - 字段级审计脱敏（见 docs/32 N3）。
+
+## 6. 远程 CI 证据
+
+- Workflow：Maven JDK 17，run **40197412084**，head **9d93db6**，conclusion **success**。
+- iam-server 单元 **35** + 集成 **148**（AdminConsoleIT **11**，含保留角色用例）；Maven 合计 **243** 项，Failures/Errors/Skipped 均为 0。
+- 门户 4 个测试文件、typecheck 与 build 通过；该 run 不覆盖 Gradle 分支。
