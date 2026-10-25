@@ -213,10 +213,11 @@ class ClientAdminIT {
 
     @Test void disableRevokesFamiliesBlocksProtocolEndpointsAndEnableRestores() throws Exception {
         service.register(operator(), registration("crm", "CONFIDENTIAL"));
+        String crmId = jdbc.queryForObject("SELECT id FROM oauth2_registered_client WHERE client_id='crm'", String.class);
         jdbc.update("""
                 INSERT INTO oauth2_authorization(id,registered_client_id,principal_name,authorization_grant_type,authorized_scopes,attributes)
-                VALUES ('family-1','crm',?,'authorization_code','openid','')
-                """, OPERATOR.toString());
+                VALUES ('family-1',?,?,'authorization_code','openid','')
+                """, crmId, OPERATOR.toString());
         service.setEnabled(operator(), "crm", false, "疑似泄露", "disable-unit-key-001", "203.0.113.9");
         assertFalse(service.list().get(0).enabled());
         assertEquals("203.0.113.9", jdbc.queryForObject(

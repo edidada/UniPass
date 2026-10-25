@@ -115,7 +115,7 @@ class ClientManagementHttpIT {
     @BeforeEach void seed() {
         factorKeys.activate("legacy", "test:fixture", "test:reset");
         jdbc.execute("TRUNCATE oauth2_authorization CASCADE"); jdbc.execute("TRUNCATE import_source CASCADE");
-        jdbc.execute("TRUNCATE oauth2_registered_client, oauth_client_status, oauth_client_secret_previous, admin_client_action, auth_audit CASCADE");
+        jdbc.execute("TRUNCATE oauth2_registered_client, oauth_client_status, oauth_client_secret_previous, admin_client_action, auth_audit, oidc_logout_task CASCADE");
         jdbc.execute("TRUNCATE feishu_flow,feishu_code_use"); feishuRemote.reset();
         user = UUID.randomUUID(); directory.password = OLD; directory.afterVerify = () -> {}; mail.reset();
         var resetKeys = redisTemplate.keys("unipass:reset:*"); if (resetKeys != null && !resetKeys.isEmpty()) redisTemplate.delete(resetKeys);
@@ -179,7 +179,9 @@ class ClientManagementHttpIT {
     private byte[] seedFactor(UUID identity) {
         byte[] secret = new byte[20]; new java.security.SecureRandom().nextBytes(secret);
         var cipher = new MfaSecretCipher(Base64.getEncoder().encodeToString(new byte[32]));
-        jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled) VALUES (?,?,true)", identity, cipher.encrypt(identity, secret)); return secret;
+        jdbc.update("INSERT INTO mfa_totp(user_id,secret_cipher,enabled) VALUES (?,?,true) " +
+                "ON CONFLICT (user_id) DO UPDATE SET secret_cipher=excluded.secret_cipher, enabled=true, pending_expires_at=NULL, failed_attempts=0, locked_until=NULL",
+                identity, cipher.encrypt(identity, secret)); return secret;
     }
     private void stepUp(HttpClient client, byte[] secret, Instant at) throws Exception {
         String context = json.readTree(postJson(client, "/api/mfa/context", Map.of()).body()).get("context").asText();
@@ -381,21 +383,23 @@ class ClientManagementHttpIT {
         JsonNode crmTokens = tokensFor(admin, "crm", sCrm);
         String crmRefresh = crmTokens.get("refresh_token").asText();
         assertEquals(200, tokenStatus(admin, "hrm", sHrm));
-        // Seed an authorization family for crm so revocation is observable.
-        jdbc.update("INSERT INTO oauth2_authorization(id,registered_client_id,principal_name,authorization_grant_type,authorized_scopes,attributes) VALUES ('family-crm','crm',?, 'authorization_code','openid','')", user.toString());
+        // Seed an authorization family for crm (using its real registration id) so revocation is observable.
+        String crmId = jdbc.queryForObject("SELECT id FROM oauth2_registered_client WHERE client_id='crm'", String.class);
+        jdbc.update("INSERT INTO oauth2_authorization(id,registered_client_id,principal_name,authorization_grant_type,authorized_scopes,attributes) VALUES ('family-crm',?,?,'authorization_code','openid','')", crmId, user.toString());
         // Disable crm.
         var disable = adminJson(admin, "/api/admin/console/clients/crm/state", Map.of("enabled", false, "reason", "疑似泄露"), UUID.randomUUID().toString());
-        assertEquals(200, disable.statusCode(), disable.body());
+        assertEquals(204, disable.statusCode(), disable.body());
         // authorize/token/introspect/refresh for the disabled client all fail with 401 invalid_client.
         assertEquals(401, authorizeStatus(admin, "crm", "v".repeat(64)));
         assertEquals(401, introspectStatus(admin, "crm", sCrm));
         assertEquals(401, refreshStatus("crm", crmRefresh));
         // An unrelated, still-enabled client is unaffected.
         assertEquals(200, tokenStatus(admin, "hrm", sHrm));
-        // The crm authorization family was revoked and stays revoked after re-enable (no resurrection).
+        // Every authorization minted for crm (the real-flow token and the manual family) is revoked; none survive.
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM oauth2_authorization WHERE registered_client_id=? AND revoked=false", Integer.class, crmId));
         assertTrue(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id='family-crm'", Boolean.class));
         var enable = adminJson(admin, "/api/admin/console/clients/crm/state", Map.of("enabled", true, "reason", "误报解除"), UUID.randomUUID().toString());
-        assertEquals(200, enable.statusCode(), enable.body());
+        assertEquals(204, enable.statusCode(), enable.body());
         assertTrue(jdbc.queryForObject("SELECT revoked FROM oauth2_authorization WHERE id='family-crm'", Boolean.class));
     }
 
