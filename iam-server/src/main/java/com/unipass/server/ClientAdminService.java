@@ -1,5 +1,7 @@
 package com.unipass.server;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -34,6 +36,7 @@ public final class ClientAdminService {
     private final ClientRegistrationService registration;
     private final Clock clock;
     private final Duration overlap;
+    private final ObjectMapper json = new ObjectMapper();
 
     public ClientAdminService(RegisteredClientRepository clients, JdbcTemplate jdbc, TransactionTemplate tx, AccountState accounts,
             AdminAuditService audit, MfaService mfa, ClientRegistrationService registration, Clock clock, Environment env) {
@@ -74,6 +77,10 @@ public final class ClientAdminService {
     public record Summary(String id, String clientId, String name, String kind, boolean enabled, List<String> redirectUris,
             List<String> postLogoutRedirectUris, Set<String> scopes, String backchannelLogoutUri, Instant issuedAt) { }
 
+    /** One immutable callback configuration snapshot, newest first when read. */
+    public record CallbackHistory(String action, List<String> redirectUris, List<String> postLogoutRedirectUris,
+            String backchannelLogoutUri, String reason, Instant createdAt) { }
+
     public List<Summary> list() {
         Map<String, Boolean> disabled = new HashMap<>();
         Set<String> deleted = new HashSet<>();
@@ -103,6 +110,52 @@ public final class ClientAdminService {
         return Boolean.TRUE.equals(jdbc.query("SELECT deleted_at IS NOT NULL FROM oauth_client_status WHERE client_id=?",
                 (org.springframework.jdbc.core.ResultSetExtractor<Boolean>) r -> r.next() ? r.getBoolean(1) : Boolean.FALSE, clientId));
     }
+
+    /** Bounded, newest-first callback history for one live (not deleted) application. */
+    public List<CallbackHistory> history(String clientId, int limit) {
+        if (limit < 1 || limit > 100) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size out of range");
+        if (clients.findByClientId(clientId) == null || isDeleted(clientId))
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Client unavailable");
+        return jdbc.query("""
+                SELECT action,redirect_uris::text AS redirect_uris,post_logout_redirect_uris::text AS logout_uris,
+                       backchannel_logout_uri,reason,created_at
+                FROM oauth_client_callback_history WHERE client_id=?
+                ORDER BY created_at DESC,id DESC LIMIT ?
+                """, (r, n) -> new CallbackHistory(r.getString("action"), readUris(r.getString("redirect_uris")),
+                readUris(r.getString("logout_uris")), r.getString("backchannel_logout_uri"), r.getString("reason"),
+                r.getTimestamp("created_at").toInstant()), clientId, limit);
+    }
+
+    private void recordCallbacks(String clientId, String action, List<String> redirects, List<String> logoutRedirects,
+            String backchannel, IdentityPrincipal principal, String reason) {
+        jdbc.update("""
+                INSERT INTO oauth_client_callback_history(id,client_id,action,redirect_uris,post_logout_redirect_uris,
+                    backchannel_logout_uri,actor_id,reason,created_at)
+                VALUES (?,?,?,?::jsonb,?::jsonb,?,?,?,?)
+                """, UUID.randomUUID(), clientId, action, json(redirects), json(logoutRedirects),
+                blankToNull(backchannel), principal.getUserId(), reason, Timestamp.from(clock.instant()));
+    }
+
+    private String json(List<String> values) {
+        try { return json.writeValueAsString(values == null ? List.of() : values); }
+        catch (Exception e) { throw new IllegalStateException("Callback history serialization failed"); }
+    }
+
+    private List<String> readUris(String raw) {
+        try { return json.readValue(raw, new TypeReference<List<String>>() { }); }
+        catch (Exception e) { throw new IllegalStateException("Stored callback history is invalid"); }
+    }
+
+    private static String blankToNull(String value) { return value == null || value.isBlank() ? null : value; }
+
+    private static boolean callbacksChanged(RegisteredClient existing, ClientRegistrationService.Spec spec) {
+        return !new HashSet<>(existing.getRedirectUris()).equals(new HashSet<>(spec.redirects()))
+                || !new HashSet<>(existing.getPostLogoutRedirectUris()).equals(new HashSet<>(spec.logoutRedirects()))
+                || !normalize((String) existing.getClientSettings().getSetting("unipass.backchannel_logout_uri"))
+                        .equals(normalize(spec.backchannel()));
+    }
+
+    private static String normalize(String value) { return value == null ? "" : value; }
 
     /**
      * Soft-deletes an application: an irreversible tombstone is written, the client is
@@ -199,6 +252,10 @@ public final class ClientAdminService {
                     .setting("unipass.backchannel_logout_uri", spec.backchannelLogoutUri() == null ? "" : spec.backchannelLogoutUri()).build());
             rebuilt.tokenSettings(existing.getTokenSettings());
             clients.save(rebuilt.build());
+            // Only actual callback changes create a new history row; a metadata-only edit does not.
+            if (callbacksChanged(existing, definition))
+                recordCallbacks(clientId, "UPDATE", definition.redirects(), definition.logoutRedirects(),
+                        definition.backchannel(), principal, reason);
             audit.record("CLIENT_UPDATED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
                     clientId, null, Map.of("client_id", clientId, "kind", kind.name()), sourceIp);
         });
@@ -278,6 +335,8 @@ public final class ClientAdminService {
             try { id = registration.register(definition, secret); }
             catch (IllegalStateException duplicate) { throw new ResponseStatusException(HttpStatus.CONFLICT, "Client already registered"); }
             catch (IllegalArgumentException invalid) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid client specification"); }
+            recordCallbacks(spec.clientId(), "REGISTER", spec.redirectUris(), spec.logoutRedirectUris(),
+                    spec.backchannelLogoutUri(), principal, spec.reason());
             audit.record("CLIENT_REGISTERED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
                     spec.clientId(), null, Map.of("client_id", spec.clientId(), "kind", kind.name()), sourceIp);
             return new Issued(id, spec.clientId(), secret, null);

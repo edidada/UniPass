@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { get, isClientId, message, post, put } from '../api'
-import type { ClientSummary, IssuedClientSecret } from '../api'
+import type { ClientSummary, IssuedClientSecret, ClientCallbackHistoryEntry } from '../api'
 import { useAccount } from '../flow'
 
 const { identity, error: accountError } = useAccount()
@@ -13,7 +13,16 @@ const rotateTarget = ref(''); const rotateReason = ref('')
 const stateTarget = ref(''); const stateReason = ref(''); const stateConfirm = ref('')
 const deleteTarget = ref(''); const deleteReason = ref(''); const deleteConfirm = ref('')
 const editTarget = ref(''); const editName = ref(''); const editRedirects = ref(''); const editLogout = ref(''); const editBackchannel = ref(''); const editReason = ref('')
+const historyTarget = ref(''); const historyEntries = ref<ClientCallbackHistoryEntry[]>([]); const historyBusy = ref(false); const historyError = ref('')
 const isOperator = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_APP') ?? false
+
+function clearHistory() { historyTarget.value = ''; historyEntries.value = []; historyError.value = '' }
+async function loadHistory(client: ClientSummary) {
+  if (historyBusy.value) return
+  historyTarget.value = client.clientId; historyBusy.value = true; historyError.value = ''
+  try { historyEntries.value = await get<ClientCallbackHistoryEntry[]>(`/api/admin/console/clients/${client.clientId}/history?limit=20`) }
+  catch (failure) { historyError.value = message(failure) } finally { historyBusy.value = false }
+}
 
 function onPageHide() { issued.value = undefined }
 
@@ -22,6 +31,7 @@ async function load() {
   busy.value = true; error.value = ''
   try { clients.value = await get<ClientSummary[]>('/api/admin/console/clients') }
   catch (failure) { error.value = message(failure) } finally { busy.value = false }
+  clearHistory()
 }
 watch(identity, value => { if (value) {
   if (isOperator()) void load(); else error.value = '此账户没有应用管理权限。'
@@ -103,6 +113,7 @@ async function remove(client: ClientSummary) {
     deleteTarget.value = ''; deleteReason.value = ''; deleteConfirm.value = ''
     clients.value = clients.value.filter(item => item.clientId !== client.clientId)
   } catch (failure) { error.value = message(failure) } finally { busy.value = false; deleteConfirm.value = '' }
+  clearHistory()
 }
 onMounted(() => window.addEventListener('pagehide', onPageHide))
 onBeforeUnmount(() => { window.removeEventListener('pagehide', onPageHide); dismiss() })
@@ -124,7 +135,23 @@ onBeforeUnmount(() => { window.removeEventListener('pagehide', onPageHide); dism
         <p v-if="stateTarget === client.clientId" class="actions"><input v-model="stateReason" :aria-label="(client.enabled ? '停用 ' : '启用 ') + client.clientId + ' 的原因'" placeholder="操作原因" maxlength="500" /><input v-if="client.enabled" v-model="stateConfirm" :aria-label="'输入 ' + client.clientId + ' 以确认停用'" :placeholder="client.clientId" autocomplete="off" spellcheck="false" /><button :class="client.enabled ? 'danger' : ''" :disabled="busy || (client.enabled && stateConfirm !== client.clientId)" @click="toggleState(client)">{{ client.enabled ? '确认停用' : '确认启用' }}</button><button class="secondary" :disabled="busy" @click="stateTarget = ''; stateConfirm = ''">取消</button></p>
         <p v-else-if="deleteTarget === client.clientId" class="actions"><input v-model="deleteReason" :aria-label="'删除 ' + client.clientId + ' 的原因'" placeholder="删除原因" maxlength="500" /><input v-model="deleteConfirm" :aria-label="'输入 ' + client.clientId + ' 以确认删除'" :placeholder="client.clientId" autocomplete="off" spellcheck="false" /><button class="danger" :disabled="busy || deleteConfirm !== client.clientId" @click="remove(client)">确认删除</button><button class="secondary" :disabled="busy" @click="deleteTarget = ''; deleteConfirm = ''; deleteReason = ''">取消</button></p>
         <p v-else-if="rotateTarget === client.clientId" class="actions"><input v-model="rotateReason" :aria-label="'轮换 ' + client.clientId + ' 的原因'" placeholder="轮换原因" maxlength="500" /><button :disabled="busy" @click="rotate">确认轮换</button><button class="secondary" :disabled="busy" @click="rotateTarget = ''">取消</button></p>
-        <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button><button class="danger" :disabled="busy" @click="deleteTarget = client.clientId">删除应用</button></p>
+        <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button><button class="secondary" :disabled="busy" @click="loadHistory(client)">回调历史</button><button class="danger" :disabled="busy" @click="deleteTarget = client.clientId">删除应用</button></p>
+        <section v-if="historyTarget === client.clientId" class="card history" aria-label="回调历史">
+          <h3>回调历史</h3>
+          <p v-if="historyBusy" role="status">正在加载历史…</p>
+          <p v-else-if="historyError" role="alert" class="error">{{ historyError }}</p>
+          <p v-else-if="!historyEntries.length" class="muted">暂无回调变更记录。</p>
+          <ol v-else class="history-list">
+            <li v-for="entry in historyEntries" :key="entry.createdAt + entry.action">
+              <p><strong>{{ entry.action }}</strong> · {{ new Date(entry.createdAt).toLocaleString() }}</p>
+              <p class="muted">回调：{{ entry.redirectUris.join('、') || '无' }}</p>
+              <p class="muted">退出重定向：{{ entry.postLogoutRedirectUris.join('、') || '无' }}</p>
+              <p class="muted" v-if="entry.backchannelLogoutUri">后端退出：{{ entry.backchannelLogoutUri }}</p>
+              <p class="muted">原因：{{ entry.reason }}</p>
+            </li>
+          </ol>
+          <p><button class="secondary" :disabled="historyBusy" @click="clearHistory">收起</button></p>
+        </section>
         <form v-if="editTarget === client.clientId" @submit.prevent="saveEdit">
           <p><label :for="'edit-name-' + client.id">显示名称</label><input :id="'edit-name-' + client.id" v-model="editName" maxlength="200" /></p>
           <p><label :for="'edit-redirects-' + client.id">回调地址（每行一个）</label><textarea :id="'edit-redirects-' + client.id" v-model="editRedirects" spellcheck="false"></textarea></p>

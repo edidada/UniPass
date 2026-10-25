@@ -19,6 +19,13 @@ public final class AdminClientController {
         return clients.list();
     }
 
+    @GetMapping("/{clientId}/history")
+    List<ClientAdminService.CallbackHistory> history(@AuthenticationPrincipal IdentityPrincipal principal,
+            @PathVariable String clientId, @RequestParam(defaultValue = "20") int limit) {
+        clients.requireAppAdmin(principal);
+        return clients.history(clientId, limit);
+    }
+
     @PostMapping
     ClientAdminService.Issued register(@AuthenticationPrincipal IdentityPrincipal principal, @RequestBody ClientAdminService.Registration registration,
             HttpServletRequest request) {
