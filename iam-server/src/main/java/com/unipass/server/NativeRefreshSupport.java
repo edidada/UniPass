@@ -1,6 +1,7 @@
 package com.unipass.server;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.web.authentication.AuthenticationConverter;
@@ -17,7 +18,8 @@ import java.util.*;
 final class NativeRefreshSupport implements AuthenticationProvider, AuthenticationConverter, OAuth2TokenGenerator<OAuth2RefreshToken> {
     private final RegisteredClientRepository clients;
     private final Clock clock;
-    NativeRefreshSupport(RegisteredClientRepository clients, Clock clock) { this.clients = clients; this.clock = clock; }
+    private final JdbcTemplate jdbc;
+    NativeRefreshSupport(RegisteredClientRepository clients, Clock clock, JdbcTemplate jdbc) { this.clients = clients; this.clock = clock; this.jdbc = jdbc; }
     @Override public Authentication convert(HttpServletRequest request) {
         if (!"refresh_token".equals(request.getParameter("grant_type")) || request.getHeader("Authorization") != null
                 || request.getParameter("client_secret") != null || request.getParameter("client_assertion") != null) return null;
@@ -32,6 +34,13 @@ final class NativeRefreshSupport implements AuthenticationProvider, Authenticati
         if (client == null || !client.getClientAuthenticationMethods().contains(ClientAuthenticationMethod.NONE)
                 || !Boolean.TRUE.equals(client.getClientSettings().getSetting("unipass.native"))
                 || !client.getAuthorizationGrantTypes().contains(AuthorizationGrantType.REFRESH_TOKEN)) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_CLIENT);
+        // Second line of defense for public clients: the fenced provider only covers
+        // secret methods, so a disabled native client must still be rejected here. A
+        // plain status read (no registered-client lock) keeps the unified lock order
+        // intact and cannot deadlock with the disable transaction.
+        boolean disabled = jdbc.query("SELECT disabled FROM oauth_client_status WHERE client_id=?",
+                (org.springframework.jdbc.core.ResultSetExtractor<Boolean>) r -> r.next() && r.getBoolean(1), client.getClientId());
+        if (disabled) throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_CLIENT);
         return new OAuth2ClientAuthenticationToken(client, ClientAuthenticationMethod.NONE, null);
     }
     @Override public boolean supports(Class<?> type) { return OAuth2ClientAuthenticationToken.class.isAssignableFrom(type); }
