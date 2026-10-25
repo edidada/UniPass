@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { get, isClientId, message, post, put } from '../api'
-import type { ClientSummary, IssuedClientSecret, ClientCallbackHistoryEntry } from '../api'
+import type { ClientSummary, IssuedClientSecret, ClientCallbackHistoryEntry, ClientRotationWindow } from '../api'
 import { useAccount } from '../flow'
 
 const { identity, error: accountError } = useAccount()
@@ -14,14 +14,38 @@ const stateTarget = ref(''); const stateReason = ref(''); const stateConfirm = r
 const deleteTarget = ref(''); const deleteReason = ref(''); const deleteConfirm = ref('')
 const editTarget = ref(''); const editName = ref(''); const editRedirects = ref(''); const editLogout = ref(''); const editBackchannel = ref(''); const editReason = ref('')
 const historyTarget = ref(''); const historyEntries = ref<ClientCallbackHistoryEntry[]>([]); const historyBusy = ref(false); const historyError = ref('')
+const windowTarget = ref(''); const windowSeconds = ref(''); const windowReason = ref(''); const windowEffective = ref<number | null>(null); const windowBusy = ref(false); const windowError = ref('')
 const isOperator = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_APP') ?? false
 
 function clearHistory() { historyTarget.value = ''; historyEntries.value = []; historyError.value = '' }
+function clearWindow() { windowTarget.value = ''; windowSeconds.value = ''; windowReason.value = ''; windowEffective.value = null; windowError.value = '' }
 async function loadHistory(client: ClientSummary) {
   if (historyBusy.value) return
   historyTarget.value = client.clientId; historyBusy.value = true; historyError.value = ''
   try { historyEntries.value = await get<ClientCallbackHistoryEntry[]>(`/api/admin/console/clients/${client.clientId}/history?limit=20`) }
   catch (failure) { historyError.value = message(failure) } finally { historyBusy.value = false }
+}
+async function loadWindow(client: ClientSummary) {
+  clearWindow(); windowTarget.value = client.clientId; windowBusy.value = true
+  try {
+    const view = await get<ClientRotationWindow>(`/api/admin/console/clients/${client.clientId}/rotation-window`)
+    windowSeconds.value = view.seconds === null ? '' : String(view.seconds); windowEffective.value = view.effectiveSeconds
+  } catch (failure) { windowError.value = message(failure) } finally { windowBusy.value = false }
+}
+async function saveWindow(client: ClientSummary) {
+  if (windowBusy.value) return
+  windowError.value = ''
+  const raw = windowSeconds.value.trim()
+  const seconds = raw === '' ? null : Number(raw)
+  if (seconds !== null && (!Number.isInteger(seconds) || seconds < 60 || seconds > 604800)) { windowError.value = '轮换窗口必须为 60–604800 秒，或留空使用全局默认。'; return }
+  if (!windowReason.value.trim()) { windowError.value = '请填写操作原因。'; return }
+  windowBusy.value = true
+  try {
+    const view = await post<ClientRotationWindow>(`/api/admin/console/clients/${client.clientId}/rotation-window`,
+      { seconds, reason: windowReason.value.trim() }, crypto.randomUUID())
+    windowSeconds.value = view.seconds === null ? '' : String(view.seconds); windowEffective.value = view.effectiveSeconds
+    notice.value = '轮换窗口已保存。'; windowReason.value = ''
+  } catch (failure) { windowError.value = message(failure) } finally { windowBusy.value = false }
 }
 
 function onPageHide() { issued.value = undefined }
@@ -32,6 +56,7 @@ async function load() {
   try { clients.value = await get<ClientSummary[]>('/api/admin/console/clients') }
   catch (failure) { error.value = message(failure) } finally { busy.value = false }
   clearHistory()
+  clearWindow()
 }
 watch(identity, value => { if (value) {
   if (isOperator()) void load(); else error.value = '此账户没有应用管理权限。'
@@ -114,6 +139,7 @@ async function remove(client: ClientSummary) {
     clients.value = clients.value.filter(item => item.clientId !== client.clientId)
   } catch (failure) { error.value = message(failure) } finally { busy.value = false; deleteConfirm.value = '' }
   clearHistory()
+  clearWindow()
 }
 onMounted(() => window.addEventListener('pagehide', onPageHide))
 onBeforeUnmount(() => { window.removeEventListener('pagehide', onPageHide); dismiss() })
@@ -135,7 +161,15 @@ onBeforeUnmount(() => { window.removeEventListener('pagehide', onPageHide); dism
         <p v-if="stateTarget === client.clientId" class="actions"><input v-model="stateReason" :aria-label="(client.enabled ? '停用 ' : '启用 ') + client.clientId + ' 的原因'" placeholder="操作原因" maxlength="500" /><input v-if="client.enabled" v-model="stateConfirm" :aria-label="'输入 ' + client.clientId + ' 以确认停用'" :placeholder="client.clientId" autocomplete="off" spellcheck="false" /><button :class="client.enabled ? 'danger' : ''" :disabled="busy || (client.enabled && stateConfirm !== client.clientId)" @click="toggleState(client)">{{ client.enabled ? '确认停用' : '确认启用' }}</button><button class="secondary" :disabled="busy" @click="stateTarget = ''; stateConfirm = ''">取消</button></p>
         <p v-else-if="deleteTarget === client.clientId" class="actions"><input v-model="deleteReason" :aria-label="'删除 ' + client.clientId + ' 的原因'" placeholder="删除原因" maxlength="500" /><input v-model="deleteConfirm" :aria-label="'输入 ' + client.clientId + ' 以确认删除'" :placeholder="client.clientId" autocomplete="off" spellcheck="false" /><button class="danger" :disabled="busy || deleteConfirm !== client.clientId" @click="remove(client)">确认删除</button><button class="secondary" :disabled="busy" @click="deleteTarget = ''; deleteConfirm = ''; deleteReason = ''">取消</button></p>
         <p v-else-if="rotateTarget === client.clientId" class="actions"><input v-model="rotateReason" :aria-label="'轮换 ' + client.clientId + ' 的原因'" placeholder="轮换原因" maxlength="500" /><button :disabled="busy" @click="rotate">确认轮换</button><button class="secondary" :disabled="busy" @click="rotateTarget = ''">取消</button></p>
-        <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button><button class="secondary" :disabled="busy" @click="loadHistory(client)">回调历史</button><button class="danger" :disabled="busy" @click="deleteTarget = client.clientId">删除应用</button></p>
+        <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="loadWindow(client)">轮换窗口</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button><button class="secondary" :disabled="busy" @click="loadHistory(client)">回调历史</button><button class="danger" :disabled="busy" @click="deleteTarget = client.clientId">删除应用</button></p>
+        <section v-if="windowTarget === client.clientId" class="card" aria-label="轮换窗口">
+          <h3>轮换窗口</h3>
+          <p class="muted">留空使用全局默认；当前有效 {{ windowEffective === null ? '—' : windowEffective }} 秒。</p>
+          <p><label :for="'window-seconds-' + client.id">窗口秒数（60–604800，留空=全局）</label><input :id="'window-seconds-' + client.id" v-model="windowSeconds" inputmode="numeric" autocomplete="off" /></p>
+          <p><label :for="'window-reason-' + client.id">操作原因</label><textarea :id="'window-reason-' + client.id" v-model="windowReason" maxlength="500"></textarea></p>
+          <p v-if="windowError" role="alert" class="error">{{ windowError }}</p>
+          <div class="actions"><button :disabled="windowBusy" @click="saveWindow(client)">保存窗口</button><button class="secondary" :disabled="windowBusy" @click="clearWindow">取消</button></div>
+        </section>
         <section v-if="historyTarget === client.clientId" class="card history" aria-label="回调历史">
           <h3>回调历史</h3>
           <p v-if="historyBusy" role="status">正在加载历史…</p>

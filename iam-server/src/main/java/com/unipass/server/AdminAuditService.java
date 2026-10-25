@@ -18,7 +18,7 @@ import java.util.*;
 public final class AdminAuditService {
     /** Detail keys never leave this allowlist; unknown keys are rejected, not silently stored. */
     static final Set<String> DETAIL_KEYS = Set.of("role", "reason", "login", "target_action", "replay", "operator",
-            "client_id", "kind", "previous_secret_valid_until", "batch_id", "rows");
+            "client_id", "kind", "previous_secret_valid_until", "batch_id", "rows", "window_seconds");
     private static final int DETAIL_MAX = 500;
     private final JdbcTemplate jdbc;
     private final Clock clock;

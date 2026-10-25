@@ -81,6 +81,9 @@ public final class ClientAdminService {
     public record CallbackHistory(String action, List<String> redirectUris, List<String> postLogoutRedirectUris,
             String backchannelLogoutUri, String reason, Instant createdAt) { }
 
+    /** Per-client rotation window; seconds is NULL when the client inherits the global default. */
+    public record RotationWindow(Integer seconds, int effectiveSeconds) { }
+
     public List<Summary> list() {
         Map<String, Boolean> disabled = new HashMap<>();
         Set<String> deleted = new HashSet<>();
@@ -157,6 +160,61 @@ public final class ClientAdminService {
 
     private static String normalize(String value) { return value == null ? "" : value; }
 
+    /** Reads the per-client window; NULL means the global default. */
+    private Integer perClientWindow(String clientId) {
+        return jdbc.query("SELECT secret_rotation_window_seconds FROM oauth_client_status WHERE client_id=?",
+                rs -> rs.next() ? (Integer) rs.getObject(1) : null, clientId);
+    }
+
+    public RotationWindow rotationWindow(String clientId) {
+        if (clients.findByClientId(clientId) == null || isDeleted(clientId))
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Client unavailable");
+        Integer seconds = perClientWindow(clientId);
+        return new RotationWindow(seconds, seconds == null ? (int) overlap.getSeconds() : seconds);
+    }
+
+    /** Sets (or clears with null) the per-client rotation window; replay by key is read-only. */
+    public RotationWindow setRotationWindow(IdentityPrincipal principal, String clientId, Integer seconds, String reason,
+            String key, String sourceIp) {
+        requireRecentAuthority(principal);
+        requireReason(reason);
+        if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency key required");
+        if (seconds != null && (seconds < 60 || seconds > 604800))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Rotation window out of range");
+        return tx.execute(status -> {
+            accounts.lockAndRequire(principal);
+            requireAppAdmin(principal);
+            locked(clientId);
+            if (isDeleted(clientId)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Client deleted");
+            UUID actionId = UUID.randomUUID();
+            boolean fresh = jdbc.update("""
+                    INSERT INTO admin_client_action(id,actor_id,client_id,action,idempotency_key,reason,created_at)
+                    VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING
+                    """, actionId, principal.getUserId(), clientId, "WINDOW", key, reason, Timestamp.from(clock.instant())) == 1;
+            if (!fresh) {
+                String stored = jdbc.query("""
+                        SELECT reason FROM admin_client_action
+                        WHERE actor_id=? AND client_id=? AND action=? AND idempotency_key=?
+                        """, (org.springframework.jdbc.core.ResultSetExtractor<String>) r -> {
+                    if (!r.next()) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
+                    return r.getString(1);
+                }, principal.getUserId(), clientId, "WINDOW", key);
+                if (!reason.equals(stored)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency context changed");
+                return rotationWindow(clientId);
+            }
+            jdbc.update("""
+                    INSERT INTO oauth_client_status(client_id,disabled,secret_rotation_window_seconds,reason,updated_at)
+                    VALUES (?,false,?,?,?) ON CONFLICT (client_id) DO UPDATE
+                    SET secret_rotation_window_seconds=excluded.secret_rotation_window_seconds,updated_at=excluded.updated_at
+                    """, clientId, seconds, reason, Timestamp.from(clock.instant()));
+            audit.record("CLIENT_ROTATION_WINDOW_SET", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
+                    clientId, actionId, Map.of("client_id", clientId,
+                            "window_seconds", seconds == null ? "global" : seconds.toString()), sourceIp);
+            return rotationWindow(clientId);
+        });
+    }
+
     /**
      * Soft-deletes an application: an irreversible tombstone is written, the client is
      * disabled, its active authorizations are revoked, and the action is audited. The
@@ -227,6 +285,7 @@ public final class ClientAdminService {
             accounts.lockAndRequire(principal);
             requireAppAdmin(principal);
             RegisteredClient existing = locked(clientId);
+            if (isDeleted(clientId)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Client deleted");
             ClientRegistrationService.Kind kind;
             try { kind = ClientRegistrationService.Kind.valueOf(spec.kind()); }
             catch (RuntimeException e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Client kind required"); }
@@ -361,6 +420,7 @@ public final class ClientAdminService {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Client unavailable");
             RegisteredClient client = clients.findByClientId(clientId);
             if (client == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Client unavailable");
+            if (isDeleted(clientId)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Client deleted");
             if (!client.getClientAuthenticationMethods().contains(ClientAuthenticationMethod.CLIENT_SECRET_BASIC))
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Client has no rotatable secret");
             UUID actionId = UUID.randomUUID();
@@ -370,7 +430,8 @@ public final class ClientAdminService {
                     """, actionId, principal.getUserId(), clientId, "ROTATE", key, reason, Timestamp.from(clock.instant())) == 1;
             if (!fresh) throw new ResponseStatusException(HttpStatus.CONFLICT, "Secret already issued for this idempotency key");
             Instant now = clock.instant();
-            Instant until = now.plus(overlap);
+            Integer perClient = perClientWindow(clientId);
+            Instant until = now.plus(perClient == null ? overlap : Duration.ofSeconds(perClient));
             // Multi-generation: append the retiring verifier and keep earlier generations
             // until their own original deadlines. A later rotation must never extend or
             // restore an older generation, so only already-expired rows are removed.

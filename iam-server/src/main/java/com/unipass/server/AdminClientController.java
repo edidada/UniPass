@@ -26,6 +26,21 @@ public final class AdminClientController {
         return clients.history(clientId, limit);
     }
 
+    @GetMapping("/{clientId}/rotation-window")
+    ClientAdminService.RotationWindow rotationWindow(@AuthenticationPrincipal IdentityPrincipal principal,
+            @PathVariable String clientId) {
+        clients.requireAppAdmin(principal);
+        return clients.rotationWindow(clientId);
+    }
+
+    @PostMapping("/{clientId}/rotation-window")
+    ClientAdminService.RotationWindow setRotationWindow(@AuthenticationPrincipal IdentityPrincipal principal,
+            @PathVariable String clientId, @RequestHeader("Idempotency-Key") String key,
+            @RequestBody RotationWindowRequest body, HttpServletRequest request) {
+        clients.requireAppAdmin(principal);
+        return clients.setRotationWindow(principal, clientId, body.seconds, body.reason, key, proxies.resolve(request));
+    }
+
     @PostMapping
     ClientAdminService.Issued register(@AuthenticationPrincipal IdentityPrincipal principal, @RequestBody ClientAdminService.Registration registration,
             HttpServletRequest request) {
@@ -70,5 +85,11 @@ public final class AdminClientController {
     public static final class DeleteRequest {
         @com.fasterxml.jackson.annotation.JsonProperty("reason") public String reason;
         @Override public String toString() { return "DeleteRequest[REDACTED]"; }
+    }
+
+    public static final class RotationWindowRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("seconds") public Integer seconds;
+        @com.fasterxml.jackson.annotation.JsonProperty("reason") public String reason;
+        @Override public String toString() { return "RotationWindowRequest[REDACTED]"; }
     }
 }

@@ -12,6 +12,7 @@ export interface AuditBatch { id: string; cutoff: string; rows: number; digest: 
 export interface AuditVerification { id: string; rows: number; intact: boolean }
 export interface ClientSummary { id: string; clientId: string; name: string; kind: 'CONFIDENTIAL' | 'NATIVE' | 'SPA'; enabled: boolean; redirectUris: string[]; postLogoutRedirectUris: string[]; scopes: string[]; backchannelLogoutUri: string; issuedAt: string }
 export interface IssuedClientSecret { id: string; clientId: string; secret: string | null; previousSecretValidUntil: string | null }
+export interface ClientRotationWindow { seconds: number | null; effectiveSeconds: number }
 export interface ClientCallbackHistoryEntry { action: 'REGISTER' | 'UPDATE'; redirectUris: string[]; postLogoutRedirectUris: string[]; backchannelLogoutUri: string | null; reason: string; createdAt: string }
 export const isClientId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_.-]{3,100}$/.test(value)
 
