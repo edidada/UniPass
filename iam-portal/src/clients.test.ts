@@ -179,18 +179,22 @@ describe('application management', () => {
     await wrapper.get('#client-redirects').setValue('https://crm.example/cb')
     await wrapper.get('#client-reason').setValue('开通新业务')
     await wrapper.get('form').trigger('submit'); await flushPromises()
+    // The secret is shown exactly once, equal to the cleartext issued by the server.
     expect(wrapper.get('[data-testid="issued-secret"]').text()).toBe(secret)
-    const leaked = typeof localStorage !== 'undefined' ? Object.keys(localStorage).some(k => (localStorage.getItem(k) ?? '').includes(secret)) : false
-    expect(leaked).toBe(false)
-    // Replay to a conflict: the prompt must not contain the secret.
+    const leakedFrom = (storage: Storage | undefined) => storage ? Object.keys(storage).some(k => (storage.getItem(k) ?? '').includes(secret)) : false
+    expect(leakedFrom(typeof localStorage !== 'undefined' ? localStorage : undefined)).toBe(false)
+    expect(leakedFrom(typeof sessionStorage !== 'undefined' ? sessionStorage : undefined)).toBe(false)
+    // Manual dismiss clears the one-time secret from the UI immediately.
+    await wrapper.findAll('button').find(button => button.text() === '我已妥善保存')!.trigger('click'); await flushPromises()
+    expect(wrapper.find('[data-testid="issued-secret"]').exists()).toBe(false)
+    // Replay to a conflict: submitting again clears the card (new submission wipes the
+    // issued secret) and the conflict prompt must never re-expose the secret.
     await wrapper.get('#client-id').setValue('crm')
     await wrapper.get('#client-name').setValue('CRM')
     await wrapper.get('#client-redirects').setValue('https://crm.example/cb')
     await wrapper.get('#client-reason').setValue('开通新业务')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(wrapper.find('[role="alert"]').text()).not.toContain(secret)
-    // Manual dismiss clears the one-time secret.
-    await wrapper.findAll('button').find(button => button.text() === '我已妥善保存')!.trigger('click'); await flushPromises()
     expect(wrapper.find('[data-testid="issued-secret"]').exists()).toBe(false)
   })
 })
