@@ -59,8 +59,10 @@ class ClientAdminIT {
         Mockito.when(accounts.roles(APP_ADMIN)).thenReturn(List.of("ROLE_ADMIN_APP"));
         Mockito.when(accounts.roles(NON_ADMIN)).thenReturn(List.of("ROLE_USER"));
         Mockito.when(accounts.roles(AUDITOR)).thenReturn(List.of("ROLE_ADMIN_AUDIT"));
+        MfaService mfa = Mockito.mock(MfaService.class);
+        Mockito.when(mfa.recent(Mockito.any())).thenReturn(true);
         var registration = new ClientRegistrationService(clients, false);
-        service = new ClientAdminService(clients, jdbc, tx, accounts, new AdminAuditService(jdbc, clock), registration, clock, env);
+        service = new ClientAdminService(clients, jdbc, tx, accounts, new AdminAuditService(jdbc, clock), mfa, registration, clock, env);
         previous = new PreviousClientSecretAuthenticationProvider(clients, jdbc, clock);
     }
     @BeforeEach void seed() {
@@ -114,6 +116,14 @@ class ClientAdminIT {
         // A public client gets no secret at all.
         assertNull(service.register(operator(), registration("mobile", "NATIVE")).secret());
         assertEquals("NATIVE", service.list().stream().filter(s -> s.clientId().equals("mobile")).findFirst().orElseThrow().kind());
+    }
+
+    @Test void rejectedWithoutRecentPasswordRecency() {
+        // mfa.recent is mocked true; exercise the recent-password half of the privileged-write gate.
+        IdentityPrincipal stale = new IdentityPrincipal(OPERATOR, 5, now.get().minusSeconds(1000), List.of("ROLE_SYSTEM_ADMIN"), now.get(),
+                IdentityPrincipal.Method.PASSWORD, now.get().minusSeconds(1000), UUID.randomUUID());
+        assertEquals(403, rejected(() -> service.register(stale, registration("crm", "CONFIDENTIAL"))).getStatusCode().value());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM oauth2_registered_client", Integer.class));
     }
 
     @Test void registrationRejectsBadSpecificationsAndMissingAuthority() {

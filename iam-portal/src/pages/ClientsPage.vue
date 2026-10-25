@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { get, isClientId, message, post, put } from '../api'
 import type { ClientSummary, IssuedClientSecret } from '../api'
 import { useAccount } from '../flow'
@@ -10,9 +10,11 @@ const issued = ref<IssuedClientSecret>()
 const clientId = ref(''); const name = ref(''); const kind = ref<'CONFIDENTIAL' | 'NATIVE' | 'SPA'>('CONFIDENTIAL')
 const redirects = ref(''); const logoutRedirects = ref(''); const backchannel = ref(''); const reason = ref('')
 const rotateTarget = ref(''); const rotateReason = ref('')
-const stateTarget = ref(''); const stateReason = ref('')
+const stateTarget = ref(''); const stateReason = ref(''); const stateConfirm = ref('')
 const editTarget = ref(''); const editName = ref(''); const editRedirects = ref(''); const editLogout = ref(''); const editBackchannel = ref(''); const editReason = ref('')
 const isOperator = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_APP') ?? false
+
+function onPageHide() { issued.value = undefined }
 
 async function load() {
   if (busy.value) return
@@ -29,12 +31,15 @@ function lines(value: string): string[] {
 async function register() {
   if (busy.value) return
   if (!isClientId(clientId.value)) { error.value = '客户端编号只能包含字母、数字、下划线、点与连字符，长度 3–100。'; return }
+  if (!name.value.trim()) { error.value = '请填写应用显示名称（负责人）。'; return }
+  const redirectList = lines(redirects.value)
+  if (new Set(redirectList).size !== redirectList.length) { error.value = '回调地址不能重复。'; return }
   if (!reason.value.trim()) { error.value = '请填写登记原因。'; return }
   busy.value = true; error.value = ''; notice.value = ''; issued.value = undefined
   try {
     issued.value = await post<IssuedClientSecret>('/api/admin/console/clients', {
-      client_id: clientId.value, name: name.value, kind: kind.value,
-      redirect_uris: lines(redirects.value), post_logout_redirect_uris: lines(logoutRedirects.value),
+      client_id: clientId.value, name: name.value.trim(), kind: kind.value,
+      redirect_uris: redirectList, post_logout_redirect_uris: lines(logoutRedirects.value),
       scopes: ['openid', 'profile', 'email', 'api.read'], backchannel_logout_uri: backchannel.value.trim() || null,
       reason: reason.value.trim(),
     })
@@ -83,10 +88,11 @@ async function toggleState(client: ClientSummary) {
     await post(`/api/admin/console/clients/${client.clientId}/state`,
       { enabled: !client.enabled, reason: stateReason.value.trim() }, crypto.randomUUID())
     notice.value = client.enabled ? '应用已停用，关联授权已被撤销。' : '应用已重新启用。'
-    stateTarget.value = ''; stateReason.value = ''; await load()
-  } catch (failure) { error.value = message(failure) } finally { busy.value = false }
+    stateTarget.value = ''; stateReason.value = ''; stateConfirm.value = ''; await load()
+  } catch (failure) { error.value = message(failure) } finally { busy.value = false; stateConfirm.value = '' }
 }
-onBeforeUnmount(dismiss)
+onMounted(() => window.addEventListener('pagehide', onPageHide))
+onBeforeUnmount(() => { window.removeEventListener('pagehide', onPageHide); dismiss() })
 </script>
 <template>
   <header class="page-heading"><span class="eyebrow">管理控制台</span><h1>应用与密钥</h1><p>登记 OAuth 应用并轮换机密客户端密钥。所有操作都会留痕。</p></header>
@@ -95,14 +101,14 @@ onBeforeUnmount(dismiss)
     <p v-if="notice" role="status" class="good">{{ notice }}</p>
     <section v-if="issued" class="card" aria-labelledby="issued-title"><h2 id="issued-title">一次性密钥</h2>
       <p>应用 <strong>{{ issued.clientId }}</strong> 的新密钥如下，关闭或刷新后不可再次查看：</p>
-      <p><code class="secret">{{ issued.secret ?? '（公共客户端无密钥）' }}</code></p>
+      <p><code class="secret" data-testid="issued-secret">{{ issued.secret ?? '（公共客户端无密钥）' }}</code></p>
       <p v-if="issued.previousSecretValidUntil" class="muted">旧密钥仍可使用至 {{ new Date(issued.previousSecretValidUntil).toLocaleString() }}。</p>
       <button class="secondary" @click="dismiss">我已妥善保存</button>
     </section>
     <section class="card"><h2>已登记应用</h2>
       <p class="muted">机密客户端密钥以单向哈希保存；轮换时旧密钥只在受控窗口内保留。</p>
       <ul class="session-list"><li v-for="client in clients" :key="client.id"><div><h3>{{ client.name }} <span class="badge">{{ client.kind }}</span> <span class="badge" :class="client.enabled ? 'good' : ''">{{ client.enabled ? '启用' : '已停用' }}</span></h3><p><code>{{ client.clientId }}</code> · 登记于 {{ new Date(client.issuedAt).toLocaleString() }}</p><p class="muted">回调：{{ client.redirectUris.join('、') || '无' }}</p><p class="muted">scope：{{ client.scopes.join(' ') }}</p>
-        <p v-if="stateTarget === client.clientId" class="actions"><input v-model="stateReason" :aria-label="(client.enabled ? '停用 ' : '启用 ') + client.clientId + ' 的原因'" placeholder="操作原因" maxlength="500" /><button :class="client.enabled ? 'danger' : ''" :disabled="busy" @click="toggleState(client)">{{ client.enabled ? '确认停用' : '确认启用' }}</button><button class="secondary" :disabled="busy" @click="stateTarget = ''">取消</button></p>
+        <p v-if="stateTarget === client.clientId" class="actions"><input v-model="stateReason" :aria-label="(client.enabled ? '停用 ' : '启用 ') + client.clientId + ' 的原因'" placeholder="操作原因" maxlength="500" /><input v-if="client.enabled" v-model="stateConfirm" :aria-label="'输入 ' + client.clientId + ' 以确认停用'" :placeholder="client.clientId" autocomplete="off" spellcheck="false" /><button :class="client.enabled ? 'danger' : ''" :disabled="busy || (client.enabled && stateConfirm !== client.clientId)" @click="toggleState(client)">{{ client.enabled ? '确认停用' : '确认启用' }}</button><button class="secondary" :disabled="busy" @click="stateTarget = ''; stateConfirm = ''">取消</button></p>
         <p v-else-if="rotateTarget === client.clientId" class="actions"><input v-model="rotateReason" :aria-label="'轮换 ' + client.clientId + ' 的原因'" placeholder="轮换原因" maxlength="500" /><button :disabled="busy" @click="rotate">确认轮换</button><button class="secondary" :disabled="busy" @click="rotateTarget = ''">取消</button></p>
         <p v-else class="actions"><button class="secondary" :disabled="busy || client.kind !== 'CONFIDENTIAL'" @click="rotateTarget = client.clientId">轮换密钥</button><button class="secondary" :disabled="busy" @click="beginEdit(client)">编辑</button><button class="secondary" :disabled="busy" @click="stateTarget = client.clientId">{{ client.enabled ? '停用' : '启用' }}</button></p>
         <form v-if="editTarget === client.clientId" @submit.prevent="saveEdit">

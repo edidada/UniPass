@@ -5,6 +5,7 @@ import ClientsPage from './pages/ClientsPage.vue'
 
 const appAdmin = { sub: '6442eccc-9153-48c7-ae69-811ba6f75836', auth_epoch: 1, login_id: '6442eccc-9153-48c7-ae69-811ba6f75836', method: 'PASSWORD', authenticated_at: '2026-10-24T00:00:00Z', password_recent: true, must_change_password: false, roles: ['ROLE_ADMIN_APP'], mfa: { enrolled: false, required: false, recent: false, recovery_required: false } }
 const plain = { ...appAdmin, roles: ['ROLE_USER'] }
+const auditor = { ...appAdmin, roles: ['ROLE_ADMIN_AUDIT'] }
 const csrf = { header_name: 'X-CSRF-TOKEN', parameter_name: '_csrf', token: 'client-csrf-proof' }
 const confidential = { id: 'c1', clientId: 'crm', name: 'CRM', kind: 'CONFIDENTIAL', enabled: true, redirectUris: ['https://crm.example/cb'], postLogoutRedirectUris: [], scopes: ['api.read', 'openid'], backchannelLogoutUri: '', issuedAt: '2026-10-24T00:00:00Z' }
 const native = { ...confidential, id: 'c2', clientId: 'mobile', name: 'Mobile', kind: 'NATIVE' }
@@ -65,7 +66,7 @@ describe('application management', () => {
     expect(wrapper.text()).not.toContain('A'.repeat(43))
   })
 
-  it('disables an application with a reason and a private idempotency key', async () => {
+  it('disables an application with a reason, exact id confirmation and a private idempotency key', async () => {
     let postedPath = ''; let postedBody: Record<string, unknown> = {}; let postedKey = ''; let enabled = true
     vi.stubGlobal('fetch', vi.fn(async (path: string, init?: RequestInit) => {
       if (path === '/api/session/me') return body(appAdmin)
@@ -81,13 +82,35 @@ describe('application management', () => {
     const wrapper = attach(); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '停用')!.trigger('click')
     await wrapper.get(`input[aria-label="停用 crm 的原因"]`).setValue('疑似泄露')
-    await wrapper.findAll('button').find(button => button.text() === '确认停用')!.trigger('click')
+    // Confirm is disabled until the exact client id is typed.
+    const confirm = wrapper.findAll('button').find(button => button.text() === '确认停用')!
+    expect(confirm.attributes('disabled')).toBeDefined()
+    await wrapper.get(`input[aria-label="输入 crm 以确认停用"]`).setValue('crm')
+    expect(confirm.attributes('disabled')).toBeUndefined()
+    await confirm.trigger('click')
     await flushPromises()
     expect(postedPath).toBe('/api/admin/console/clients/crm/state')
     expect(postedBody).toEqual({ enabled: false, reason: '疑似泄露' })
     expect(postedKey).toMatch(/^[0-9a-f-]{36}$/)
     expect(wrapper.text()).toContain('应用已停用')
     expect(wrapper.text()).toContain('已停用')
+  })
+
+  it('does not disable when the confirmation id does not match the client id', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/api/session/me') return body(appAdmin)
+      if (path === '/api/public/csrf') return body(csrf)
+      if (path === '/api/admin/console/clients') return body([confidential])
+      return body({ error: 'MUST_NOT_CALL' })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '停用')!.trigger('click')
+    await wrapper.get(`input[aria-label="停用 crm 的原因"]`).setValue('疑似泄露')
+    await wrapper.get(`input[aria-label="输入 crm 以确认停用"]`).setValue('wrong-id')
+    await wrapper.findAll('button').find(button => button.text() === '确认停用')!.trigger('click')
+    await flushPromises()
+    expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(0)
   })
 
   it('rejects an invalid client identifier before any registration request', async () => {
@@ -99,5 +122,75 @@ describe('application management', () => {
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(wrapper.text()).toContain('客户端编号')
     expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(0)
+  })
+
+  it('auditor sees no client management surface and issues no admin request', async () => {
+    const fetcher = vi.fn(async (path: string) => path === '/api/session/me' ? body(auditor) : body({ error: 'MUST_NOT_CALL' }))
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    expect(wrapper.text()).toContain('没有应用管理权限')
+    expect(fetcher.mock.calls.filter(([path]) => String(path).startsWith('/api/admin/console/clients'))).toHaveLength(0)
+  })
+
+  it('rejects duplicate callback URIs before any registration request', async () => {
+    const fetcher = vi.fn(async (path: string, _init?: RequestInit) => path === '/api/session/me' ? body(appAdmin) : body([]))
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    await wrapper.get('#client-id').setValue('crm')
+    await wrapper.get('#client-name').setValue('CRM')
+    await wrapper.get('#client-redirects').setValue('https://crm.example/cb\nhttps://crm.example/cb')
+    await wrapper.get('#client-reason').setValue('测试原因')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(wrapper.text()).toContain('回调地址')
+    expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(0)
+  })
+
+  it('rejects a registration without a responsible-party name', async () => {
+    const fetcher = vi.fn(async (path: string, _init?: RequestInit) => path === '/api/session/me' ? body(appAdmin) : body([]))
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    await wrapper.get('#client-id').setValue('crm')
+    await wrapper.get('#client-redirects').setValue('https://crm.example/cb')
+    await wrapper.get('#client-reason').setValue('测试原因')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(wrapper.text()).toContain('显示名称')
+    expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(0)
+  })
+
+  it('shows the one-time secret once, clears it on dismiss, and never leaks it to storage', async () => {
+    const secret = 'A'.repeat(43)
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/api/session/me') return body(appAdmin)
+      if (path === '/api/public/csrf') return body(csrf)
+      if (path === '/api/admin/console/clients' && init?.method === 'POST') {
+        const posts = fetcher.mock.calls.filter(c => c[0] === path && (c[1] as RequestInit | undefined)?.method === 'POST')
+        // A replay of the same registration returns a conflict without re-exposing the secret.
+        if (posts.length > 1)
+          return new Response(JSON.stringify({ error: '密钥已签发，请勿重复提交' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+        return body({ id: 'c1', clientId: 'crm', secret, previousSecretValidUntil: null })
+      }
+      if (path === '/api/admin/console/clients') return body([])
+      return body({ error: 'MUST_NOT_CALL' })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    await wrapper.get('#client-id').setValue('crm')
+    await wrapper.get('#client-name').setValue('CRM')
+    await wrapper.get('#client-redirects').setValue('https://crm.example/cb')
+    await wrapper.get('#client-reason').setValue('开通新业务')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(wrapper.get('[data-testid="issued-secret"]').text()).toBe(secret)
+    const leaked = typeof localStorage !== 'undefined' ? Object.keys(localStorage).some(k => (localStorage.getItem(k) ?? '').includes(secret)) : false
+    expect(leaked).toBe(false)
+    // Replay to a conflict: the prompt must not contain the secret.
+    await wrapper.get('#client-id').setValue('crm')
+    await wrapper.get('#client-name').setValue('CRM')
+    await wrapper.get('#client-redirects').setValue('https://crm.example/cb')
+    await wrapper.get('#client-reason').setValue('开通新业务')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(wrapper.find('[role="alert"]').text()).not.toContain(secret)
+    // Manual dismiss clears the one-time secret.
+    await wrapper.findAll('button').find(button => button.text() === '我已妥善保存')!.trigger('click'); await flushPromises()
+    expect(wrapper.find('[data-testid="issued-secret"]').exists()).toBe(false)
   })
 })

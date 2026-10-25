@@ -30,13 +30,15 @@ public final class ClientAdminService {
     private final TransactionTemplate tx;
     private final AccountState accounts;
     private final AdminAuditService audit;
+    private final MfaService mfa;
     private final ClientRegistrationService registration;
     private final Clock clock;
     private final Duration overlap;
 
     public ClientAdminService(RegisteredClientRepository clients, JdbcTemplate jdbc, TransactionTemplate tx, AccountState accounts,
-            AdminAuditService audit, ClientRegistrationService registration, Clock clock, Environment env) {
+            AdminAuditService audit, MfaService mfa, ClientRegistrationService registration, Clock clock, Environment env) {
         this.clients = clients; this.jdbc = jdbc; this.tx = tx; this.accounts = accounts; this.audit = audit;
+        this.mfa = mfa;
         this.registration = registration; this.clock = clock;
         Duration configured;
         try { configured = env.getProperty("unipass.clients.secret-rotation-window", Duration.class, DEFAULT_OVERLAP); }
@@ -50,6 +52,13 @@ public final class ClientAdminService {
         List<String> roles = accounts.roles(principal.getUserId());
         if (!roles.contains("ROLE_SYSTEM_ADMIN") && !roles.contains("ROLE_ADMIN_APP"))
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Application administration required");
+    }
+
+    /** Enforces the application-admin role plus recent genuine password and recent MFA, matching the other privileged consoles. */
+    private void requireRecentAuthority(IdentityPrincipal principal) {
+        requireAppAdmin(principal);
+        if (!principal.hasRecentPassword(clock.instant()) || !mfa.recent(principal))
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Administrative authority and recent password/MFA required");
     }
 
     public record Registration(String clientId, String name, String kind, List<String> redirectUris,
@@ -93,12 +102,13 @@ public final class ClientAdminService {
     }
 
     public void update(IdentityPrincipal principal, String clientId, Registration spec, String reason, String sourceIp) {
-        requireAppAdmin(principal);
+        requireRecentAuthority(principal);
         requireReason(reason);
         if (spec == null || !clientId.equals(spec.clientId()))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Client identifier is immutable");
         tx.executeWithoutResult(status -> {
             accounts.lockAndRequire(principal);
+            requireAppAdmin(principal);
             RegisteredClient existing = locked(clientId);
             ClientRegistrationService.Kind kind;
             try { kind = ClientRegistrationService.Kind.valueOf(spec.kind()); }
@@ -136,12 +146,13 @@ public final class ClientAdminService {
     }
 
     public void setEnabled(IdentityPrincipal principal, String clientId, boolean enabled, String reason, String key, String sourceIp) {
-        requireAppAdmin(principal);
+        requireRecentAuthority(principal);
         requireReason(reason);
         if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency key required");
         tx.executeWithoutResult(status -> {
             accounts.lockAndRequire(principal);
+            requireAppAdmin(principal);
             locked(clientId);
             String action = enabled ? "ENABLE" : "DISABLE";
             UUID actionId = UUID.randomUUID();
@@ -186,7 +197,7 @@ public final class ClientAdminService {
     }
 
     public Issued register(IdentityPrincipal principal, Registration spec, String sourceIp) {
-        requireAppAdmin(principal);
+        requireRecentAuthority(principal);
         requireReason(spec.reason());
         ClientRegistrationService.Kind kind;
         try { kind = ClientRegistrationService.Kind.valueOf(spec.kind()); }
@@ -196,6 +207,7 @@ public final class ClientAdminService {
                 spec.redirectUris(), spec.logoutRedirectUris(), spec.scopes(), spec.backchannelLogoutUri());
         return tx.execute(status -> {
             accounts.lockAndRequire(principal);
+            requireAppAdmin(principal);
             String id;
             try { id = registration.register(definition, secret); }
             catch (IllegalStateException duplicate) { throw new ResponseStatusException(HttpStatus.CONFLICT, "Client already registered"); }
@@ -211,12 +223,13 @@ public final class ClientAdminService {
     }
 
     public Issued rotate(IdentityPrincipal principal, String clientId, String reason, String key, String sourceIp) {
-        requireAppAdmin(principal);
+        requireRecentAuthority(principal);
         requireReason(reason);
         if (key == null || !key.matches("[a-zA-Z0-9_-]{16,128}"))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency key required");
         return tx.execute(status -> {
             accounts.lockAndRequire(principal);
+            requireAppAdmin(principal);
             // Serialize rotations per client; the row lock also guarantees the previous
             // hash we read below is the current secret at commit time.
             if (jdbc.queryForList("SELECT client_id FROM oauth2_registered_client WHERE client_id=? FOR UPDATE", String.class, clientId).isEmpty())
