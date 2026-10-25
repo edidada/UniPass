@@ -153,7 +153,7 @@ public final class ClientAdminService {
         tx.executeWithoutResult(status -> {
             accounts.lockAndRequire(principal);
             requireAppAdmin(principal);
-            locked(clientId);
+            RegisteredClient client = locked(clientId);
             String action = enabled ? "ENABLE" : "DISABLE";
             UUID actionId = UUID.randomUUID();
             boolean fresh = jdbc.update("""
@@ -177,7 +177,7 @@ public final class ClientAdminService {
                     """, clientId, !enabled, reason, Timestamp.from(clock.instant()));
             if (!enabled) {
                 // The V8 trigger enqueues back-channel logout for every newly revoked family.
-                jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE registered_client_id=? AND revoked=false", clientId);
+                jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE registered_client_id=? AND revoked=false", client.getId());
             }
             audit.record(enabled ? "CLIENT_ENABLED" : "CLIENT_DISABLED", "SUCCESS", principal.getUserId(), null,
                     principal.getLoginId(), clientId, actionId, Map.of("client_id", clientId), sourceIp);
