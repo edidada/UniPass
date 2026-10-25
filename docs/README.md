@@ -46,6 +46,7 @@
 | [36-多代前序客户端密钥](36-多代前序客户端密钥.md) |
 | [37-按客户端轮换窗口](37-按客户端轮换窗口.md) |
 | [38-角色口径与USER_OPERATOR](38-角色口径与USER_OPERATOR.md) |
+| [39-退出任务围栏](39-退出任务围栏.md) |
 | [依赖基线](dependencies.md) |
 | [业务接口 OpenAPI 3.1](openapi.json) |
 | [独立 RP/BFF 接口 OpenAPI 3.1](web-openapi.json) |

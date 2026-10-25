@@ -160,6 +160,20 @@ public final class ClientAdminService {
 
     private static String normalize(String value) { return value == null ? "" : value; }
 
+    /**
+     * A disabled or deleted client must not be called again. The V8 trigger queues logout
+     * tasks for newly revoked families in this same transaction; mark the client's pending
+     * and running tasks DEAD so the worker never delivers them. A task already in flight in
+     * another worker may still complete; the guarantee is no new delivery after this commit.
+     * Re-enabling never revives fenced tasks.
+     */
+    private void fenceLogoutTasks(String clientId) {
+        jdbc.update("""
+                UPDATE oidc_logout_task SET state='DEAD',finished_at=?
+                WHERE client_id=? AND state IN ('PENDING','RUNNING')
+                """, Timestamp.from(clock.instant()), clientId);
+    }
+
     /** Reads the per-client window; NULL means the global default. */
     private Integer perClientWindow(String clientId) {
         return jdbc.query("SELECT secret_rotation_window_seconds FROM oauth_client_status WHERE client_id=?",
@@ -262,6 +276,7 @@ public final class ClientAdminService {
                     """, clientId, Timestamp.from(clock.instant()), principal.getUserId(), reason, reason, Timestamp.from(clock.instant()));
             // Revoke the real authorization families using the locked registration id, not the client id.
             jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE registered_client_id=? AND revoked=false", client.getId());
+            fenceLogoutTasks(clientId);
             audit.record("CLIENT_DELETED", "SUCCESS", principal.getUserId(), null, principal.getLoginId(),
                     clientId, actionId, Map.of("client_id", clientId, "reason", reason), sourceIp);
         });
@@ -360,6 +375,7 @@ public final class ClientAdminService {
             if (!enabled) {
                 // The V8 trigger enqueues back-channel logout for every newly revoked family.
                 jdbc.update("UPDATE oauth2_authorization SET revoked=true WHERE registered_client_id=? AND revoked=false", client.getId());
+                fenceLogoutTasks(clientId);
             }
             audit.record(enabled ? "CLIENT_ENABLED" : "CLIENT_DISABLED", "SUCCESS", principal.getUserId(), null,
                     principal.getLoginId(), clientId, actionId, Map.of("client_id", clientId), sourceIp);

@@ -341,6 +341,50 @@ class ClientAdminIT {
         assertNotNull(jdbc.queryForObject("SELECT id FROM oauth2_registered_client WHERE client_id='crm'", String.class));
     }
 
+    @Test void disableAndDeleteFenceLogoutTasksWithoutTouchingOtherClients() {
+        service.register(operator(), registration("crm", "CONFIDENTIAL"));
+        service.register(operator(), registration("hrm", "CONFIDENTIAL"));
+        String crmId = jdbc.queryForObject("SELECT id FROM oauth2_registered_client WHERE client_id='crm'", String.class);
+        jdbc.update("""
+                INSERT INTO oauth2_authorization(id,registered_client_id,principal_name,authorization_grant_type)
+                VALUES ('fam-fence',?,?,'authorization_code')
+                """, crmId, OPERATOR.toString());
+        jdbc.update("""
+                INSERT INTO oidc_rp_session(authorization_id,user_id,client_id,target_uri,sid,login_authenticated_at)
+                VALUES ('fam-fence',?,'crm','https://crm.example/backchannel','sid-fence',now())
+                """, OPERATOR);
+        UUID crmPending = UUID.randomUUID(), hrmPending = UUID.randomUUID();
+        insertTask(crmPending, "fam-old", "crm");
+        insertTask(hrmPending, "fam-hrm", "hrm");
+        service.setEnabled(operator(), "crm", false, "停用并围栏退出任务", "fence-disable-0001");
+        // The V8 trigger task and the pre-existing task are both fenced; hrm is untouched.
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT count(*) FROM oidc_logout_task WHERE client_id='crm' AND state='DEAD' AND finished_at IS NOT NULL", Integer.class));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT count(*) FROM oidc_logout_task WHERE client_id='crm' AND state IN ('PENDING','RUNNING')", Integer.class));
+        assertEquals("DEAD", taskState(crmPending));
+        assertEquals("PENDING", taskState(hrmPending));
+        // Re-enabling the client never revives fenced delivery tasks.
+        service.setEnabled(operator(), "crm", true, "恢复入口", "fence-enable-0001");
+        assertEquals("DEAD", taskState(crmPending));
+        // Deletion uses the same fence.
+        service.delete(operator(), "hrm", "删除并围栏退出任务", "fence-delete-0001");
+        assertEquals("DEAD", taskState(hrmPending));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT count(*) FROM oidc_logout_task WHERE client_id='hrm' AND state IN ('PENDING','RUNNING')", Integer.class));
+    }
+
+    private void insertTask(UUID id, String authorizationId, String clientId) {
+        jdbc.update("""
+                INSERT INTO oidc_logout_task(id,authorization_id,user_id,client_id,target_uri,sid,login_authenticated_at)
+                VALUES (?,?,?,?,?,'sid',now())
+                """, id, authorizationId, OPERATOR, clientId, "https://" + clientId + ".example/backchannel");
+    }
+
+    private String taskState(UUID id) {
+        return jdbc.queryForObject("SELECT state FROM oidc_logout_task WHERE id=?", String.class, id);
+    }
+
     @Test void callbackHistoryRecordsRegisterAndOnlyCallbackChanges() {
         service.register(operator(), registration("crm", "CONFIDENTIAL"));
         // Registration records exactly one REGISTER snapshot.
