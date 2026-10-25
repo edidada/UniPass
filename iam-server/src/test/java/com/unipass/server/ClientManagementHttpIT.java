@@ -491,6 +491,8 @@ class ClientManagementHttpIT {
         assertEquals(86400, clearedNode.get("effectiveSeconds").asInt());
         assertEquals(400, adminJson(admin, "/api/admin/console/clients/crm/rotation-window",
                 Map.of("seconds", 59, "reason", "太短"), UUID.randomUUID().toString()).statusCode());
+        // Drop the application-admin role before checking the read-only auditor gate.
+        jdbc.update("DELETE FROM iam_user_role WHERE user_id=? AND role='ROLE_ADMIN_APP'", user);
         HttpClient auditor = administrator("ROLE_ADMIN_AUDIT");
         assertEquals(403, adminJson(auditor, "/api/admin/console/clients/crm/rotation-window",
                 Map.of("seconds", 300, "reason", "越权"), UUID.randomUUID().toString()).statusCode());
