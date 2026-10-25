@@ -292,6 +292,43 @@ class ClientAdminIT {
         assertNotNull(jdbc.queryForObject("SELECT id FROM oauth2_registered_client WHERE client_id='crm'", String.class));
     }
 
+    @Test void callbackHistoryRecordsRegisterAndOnlyCallbackChanges() {
+        service.register(operator(), registration("crm", "CONFIDENTIAL"));
+        // Registration records exactly one REGISTER snapshot.
+        var first = service.history("crm", 20);
+        assertEquals(1, first.size());
+        assertEquals("REGISTER", first.get(0).action());
+        assertTrue(first.get(0).redirectUris().contains("https://app.example/callback"));
+        // A callback change adds an UPDATE row; the newest snapshot comes first.
+        var edited = new ClientAdminService.Registration("crm", "CRM 新名称", "CONFIDENTIAL",
+                List.of("https://crm.example/cb2"), List.of("https://crm.example/bye"),
+                Set.of("openid", "api.read"), "https://crm.example/logout/backchannel", "调整回调");
+        service.update(operator(), "crm", edited, edited.reason());
+        var second = service.history("crm", 20);
+        assertEquals(2, second.size());
+        assertEquals("UPDATE", second.get(0).action());
+        assertEquals("REGISTER", second.get(1).action());
+        assertEquals(List.of("https://crm.example/cb2"), second.get(0).redirectUris());
+        assertEquals(List.of("https://crm.example/bye"), second.get(0).postLogoutRedirectUris());
+        assertEquals("https://crm.example/logout/backchannel", second.get(0).backchannelLogoutUri());
+        assertEquals("调整回调", second.get(0).reason());
+        // A metadata-only edit (name/scope, no callback change) does not add a third row.
+        var renamed = new ClientAdminService.Registration("crm", "CRM 重命名", "CONFIDENTIAL",
+                List.of("https://crm.example/cb2"), List.of("https://crm.example/bye"),
+                Set.of("openid", "api.read"), "https://crm.example/logout/backchannel", "仅改名");
+        service.update(operator(), "crm", renamed, renamed.reason());
+        assertEquals(2, service.history("crm", 20).size());
+        // Out-of-range page sizes are rejected; the stored rows carry no secret material.
+        assertEquals(400, rejected(() -> service.history("crm", 0)).getStatusCode().value());
+        assertEquals(400, rejected(() -> service.history("crm", 101)).getStatusCode().value());
+        assertTrue(service.history("crm", 20).stream().noneMatch(entry -> entry.reason() == null));
+        // History for a soft-deleted client is unavailable (404), even though the audit row remains.
+        service.delete(operator(), "crm", "不再需要", "history-del-key-0001");
+        assertEquals(404, rejected(() -> service.history("crm", 20)).getStatusCode().value());
+        // An unknown client is likewise 404.
+        assertEquals(404, rejected(() -> service.history("missing", 20)).getStatusCode().value());
+    }
+
     @Test void auditorReadsAuditButCannotChangeRolesOrClients() {
         var console = new AdminConsoleService(jdbc, tx, accounts, new AdminAuditService(jdbc, java.time.Clock.systemUTC()), null, java.time.Clock.systemUTC());
         IdentityPrincipal auditor = principal(AUDITOR, List.of("ROLE_ADMIN_AUDIT"));

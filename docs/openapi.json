@@ -1818,6 +1818,52 @@
         }
       }
     },
+    "/api/admin/console/clients/{clientId}/history": {
+      "get": {
+        "operationId": "listClientCallbackHistory",
+        "description": "Newest-first callback configuration snapshots for a live application. A REGISTER snapshot is written on registration; an UPDATE snapshot only when redirect/logout/back-channel actually changes. The payload never contains secrets or hashes. Soft-deleted clients are hidden (404).",
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{3,100}$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Callback history, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientCallbackHistory"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Rejected"
+          }
+        }
+      }
+    },
     "/api/admin/console/audit/archive": {
       "get": {
         "operationId": "listAuditArchiveBatches",
@@ -2624,6 +2670,52 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          }
+        }
+      },
+      "ClientCallbackHistory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "redirectUris",
+          "postLogoutRedirectUris",
+          "backchannelLogoutUri",
+          "reason",
+          "createdAt"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "REGISTER",
+              "UPDATE"
+            ]
+          },
+          "redirectUris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "postLogoutRedirectUris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "backchannelLogoutUri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

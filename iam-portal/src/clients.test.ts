@@ -174,6 +174,30 @@ describe('application management', () => {
     expect(fetcher.mock.calls.filter(([path]) => String(path).startsWith('/api/admin/console/clients'))).toHaveLength(0)
   })
 
+  it('loads callback history on demand and never exposes secret material', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/api/session/me') return body(appAdmin)
+      if (path === '/api/admin/console/clients') return body([confidential])
+      if (String(path).startsWith('/api/admin/console/clients/crm/history')) {
+        return body([{ action: 'REGISTER', redirectUris: ['https://crm.example/cb'], postLogoutRedirectUris: [], backchannelLogoutUri: null, reason: '开通应用', createdAt: '2026-10-24T00:00:00Z' }])
+      }
+      return body({ error: 'MUST_NOT_CALL' })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = attach(); await flushPromises()
+    const historyButton = wrapper.findAll('button').find(button => button.text() === '回调历史')!
+    expect(historyButton).toBeTruthy()
+    await historyButton.trigger('click'); await flushPromises()
+    expect(fetcher.mock.calls.some(([path]) => String(path).startsWith('/api/admin/console/clients/crm/history'))).toBe(true)
+    expect(wrapper.text()).toContain('REGISTER')
+    expect(wrapper.text()).toContain('https://crm.example/cb')
+    expect(wrapper.text()).toContain('开通应用')
+    // No secret or storage leakage from the history panel.
+    const leaked = (storage: Storage | undefined) => storage ? Object.keys(storage).some(k => (storage.getItem(k) ?? '').includes('A'.repeat(43))) : false
+    expect(leaked(typeof localStorage !== 'undefined' ? localStorage : undefined)).toBe(false)
+    expect(leaked(typeof sessionStorage !== 'undefined' ? sessionStorage : undefined)).toBe(false)
+  })
+
   it('rejects duplicate callback URIs before any registration request', async () => {
     const fetcher = vi.fn(async (path: string, _init?: RequestInit) => path === '/api/session/me' ? body(appAdmin) : body([]))
     vi.stubGlobal('fetch', fetcher)

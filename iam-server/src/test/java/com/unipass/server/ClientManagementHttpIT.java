@@ -115,7 +115,7 @@ class ClientManagementHttpIT {
     @BeforeEach void seed() {
         factorKeys.activate("legacy", "test:fixture", "test:reset");
         jdbc.execute("TRUNCATE oauth2_authorization CASCADE"); jdbc.execute("TRUNCATE import_source CASCADE");
-        jdbc.execute("TRUNCATE oauth2_registered_client, oauth_client_status, oauth_client_secret_previous, admin_client_action, auth_audit, oidc_logout_task CASCADE");
+        jdbc.execute("TRUNCATE oauth2_registered_client, oauth_client_status, oauth_client_secret_previous, admin_client_action, auth_audit, oidc_logout_task, oauth_client_callback_history CASCADE");
         jdbc.execute("TRUNCATE feishu_flow,feishu_code_use"); feishuRemote.reset();
         user = UUID.randomUUID(); directory.password = OLD; directory.afterVerify = () -> {}; mail.reset();
         var resetKeys = redisTemplate.keys("unipass:reset:*"); if (resetKeys != null && !resetKeys.isEmpty()) redisTemplate.delete(resetKeys);
@@ -427,6 +427,42 @@ class ClientManagementHttpIT {
         String detail = jdbc.queryForObject("SELECT detail FROM auth_audit WHERE action='CLIENT_DELETED' AND detail->>'client_id'=?", String.class, "crm");
         assertNotNull(detail);
         assertFalse(detail.contains(sCrm));
+    }
+
+    @Test void callbackHistoryIsReadableByAppAdminsAndHiddenAfterDelete() throws Exception {
+        HttpClient admin = administrator("ROLE_ADMIN_APP");
+        registerConfidential(admin, "crm");
+        // The app-admin console answers 200 with the REGISTER snapshot and no secret material.
+        var ok = get(admin, "/api/admin/console/clients/crm/history");
+        assertEquals(200, ok.statusCode(), ok.body());
+        JsonNode arr = json.readTree(ok.body());
+        assertEquals(1, arr.size());
+        assertEquals("REGISTER", arr.get(0).get("action").asText());
+        assertFalse(ok.body().contains("secret"), "history must not surface secret material");
+        // SYSTEM_ADMIN is authorized by the same gate.
+        HttpClient sys = administrator("ROLE_SYSTEM_ADMIN");
+        var ok2 = get(sys, "/api/admin/console/clients/crm/history");
+        assertEquals(200, ok2.statusCode(), ok2.body());
+        // After soft delete the endpoint reports 404 (the row is retained for audit only).
+        var delete = adminJson(admin, "/api/admin/console/clients/crm/delete", Map.of("reason", "不再需要"), "hist-http-del-0001");
+        assertEquals(204, delete.statusCode(), delete.body());
+        assertEquals(404, get(admin, "/api/admin/console/clients/crm/history").statusCode());
+    }
+
+    @Test void callbackHistoryForbiddenForPlainUserAndAuditor() throws Exception {
+        // Seed a client with an app-admin session, then strip roles to test the negative cases
+        // against the same account without the app-admin gate leaking through.
+        HttpClient admin = administrator("ROLE_SYSTEM_ADMIN");
+        registerConfidential(admin, "crm");
+        jdbc.update("DELETE FROM iam_user_role WHERE user_id=?", user);
+        HttpClient plain = browser();
+        login(plain);
+        assertEquals(403, get(plain, "/api/admin/console/clients/crm/history").statusCode());
+        // A read-only auditor is also refused (history is an app-admin console surface).
+        jdbc.update("INSERT INTO iam_user_role(user_id,role) VALUES (?,?)", user, "ROLE_ADMIN_AUDIT");
+        HttpClient auditor = browser();
+        login(auditor);
+        assertEquals(403, get(auditor, "/api/admin/console/clients/crm/history").statusCode());
     }
 
     @AfterAll void stop() throws Exception { if (redis != null && redis.isAlive()) redis.destroy(); if (postgres != null) postgres.close(); }
