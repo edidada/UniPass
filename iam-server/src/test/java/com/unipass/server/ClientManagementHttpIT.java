@@ -352,7 +352,9 @@ class ClientManagementHttpIT {
         var spa = administrator("ROLE_ADMIN_APP");
         var spaResp = adminJson(spa, "/api/admin/console/clients", publicBody("spa", "SPA"), null);
         assertTrue(spaResp.statusCode() >= 200 && spaResp.statusCode() < 300, spaResp.body());
-        assertNull(json.readTree(spaResp.body()).get("secret"));
+        JsonNode publicIssued = json.readTree(spaResp.body());
+        assertTrue(publicIssued.get("secret") == null || publicIssued.get("secret").isNull(),
+                "public client must not carry a cleartext secret (field missing or explicit null acceptable): " + publicIssued);
         assertEquals(400, adminJson(spa, "/api/admin/console/clients/spa/rotate", Map.of("reason", "原因"), UUID.randomUUID().toString()).statusCode());
     }
 
