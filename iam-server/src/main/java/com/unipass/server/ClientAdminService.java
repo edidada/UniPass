@@ -120,7 +120,7 @@ public final class ClientAdminService {
                 SELECT action,redirect_uris::text AS redirect_uris,post_logout_redirect_uris::text AS logout_uris,
                        backchannel_logout_uri,reason,created_at
                 FROM oauth_client_callback_history WHERE client_id=?
-                ORDER BY created_at DESC,id DESC LIMIT ?
+                ORDER BY created_at DESC,seq DESC LIMIT ?
                 """, (r, n) -> new CallbackHistory(r.getString("action"), readUris(r.getString("redirect_uris")),
                 readUris(r.getString("logout_uris")), r.getString("backchannel_logout_uri"), r.getString("reason"),
                 r.getTimestamp("created_at").toInstant()), clientId, limit);

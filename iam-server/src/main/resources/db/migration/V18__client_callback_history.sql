@@ -6,6 +6,7 @@
 -- hidden from the live management surface).
 CREATE TABLE oauth_client_callback_history (
  id uuid PRIMARY KEY,
+ seq bigserial NOT NULL,
  client_id varchar(100) NOT NULL REFERENCES oauth2_registered_client(client_id) ON DELETE CASCADE,
  action varchar(16) NOT NULL CHECK (action IN ('REGISTER','UPDATE')),
  redirect_uris jsonb NOT NULL,
