@@ -20,9 +20,11 @@ public final class AuditArchiveWorker {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AuditArchiveWorker.class);
     private final AuditMaintenanceService maintenance;
     private final Duration retention;
+    private final ArchiveElection election;
 
-    public AuditArchiveWorker(AuditMaintenanceService maintenance, Environment env) {
+    public AuditArchiveWorker(AuditMaintenanceService maintenance, Environment env, ArchiveElection election) {
         this.maintenance = maintenance;
+        this.election = election;
         Duration configured;
         try { configured = env.getProperty("unipass.audit.retention", Duration.class, Duration.ofDays(180)); }
         catch (RuntimeException invalid) { throw new IllegalArgumentException("Invalid audit retention window"); }
@@ -33,13 +35,18 @@ public final class AuditArchiveWorker {
     @Scheduled(fixedDelayString = "${unipass.audit.archive.interval:PT30M}", initialDelayString = "${unipass.audit.archive.initial-delay:PT1M}")
     public void run() {
         try {
-            Instant cutoff = Instant.now().minus(retention);
-            for (int batch = 0; batch < 20; batch++) {
-                var archived = maintenance.archiveDue(cutoff, BATCH);
-                if (archived == null || archived.rows() < BATCH) return;
-            }
+            // Only one instance archives at a time; the loser skips this tick.
+            election.tryRun(this::archiveBatches);
         } catch (RuntimeException unavailable) {
             LOG.warn("Audit archival unavailable");
+        }
+    }
+
+    private void archiveBatches() {
+        Instant cutoff = Instant.now().minus(retention);
+        for (int batch = 0; batch < 20; batch++) {
+            var archived = maintenance.archiveDue(cutoff, BATCH);
+            if (archived == null || archived.rows() < BATCH) return;
         }
     }
 }
