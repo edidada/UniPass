@@ -4,7 +4,7 @@ import { assertCursor, get, isUuid, message, post } from '../api'
 import type { AdminAuditEntry, AdminAuditPage, AuditBatch, AuditVerification } from '../api'
 import { useAccount } from '../flow'
 
-const assignable: string[] = ['ROLE_SYSTEM_ADMIN', 'ROLE_ADMIN_APP', 'ROLE_ADMIN_AUDIT', 'ROLE_ADMIN_PASSWORD_RESET', 'ROLE_ADMIN_PASSWORD_RECOVERY', 'ROLE_ADMIN_MFA_RECOVERY']
+const assignable: string[] = ['ROLE_SYSTEM_ADMIN', 'ROLE_ADMIN_APP', 'ROLE_ADMIN_AUDIT', 'ROLE_USER_OPERATOR', 'ROLE_ADMIN_PASSWORD_RESET', 'ROLE_ADMIN_PASSWORD_RECOVERY', 'ROLE_ADMIN_MFA_RECOVERY']
 const { identity, error: accountError } = useAccount()
 const hasAudit = () => identity.value?.roles?.some(role => role === 'ROLE_SYSTEM_ADMIN' || role === 'ROLE_ADMIN_AUDIT') ?? false
 const hasConsole = () => identity.value?.roles?.includes('ROLE_SYSTEM_ADMIN') ?? false

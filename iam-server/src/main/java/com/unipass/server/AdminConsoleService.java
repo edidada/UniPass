@@ -92,6 +92,7 @@ public final class AdminConsoleService {
         });
     }
 
-    static final Set<String> ASSIGNABLE = Set.of("ROLE_SYSTEM_ADMIN", "ROLE_ADMIN_APP", "ROLE_ADMIN_AUDIT", "ROLE_ADMIN_PASSWORD_RESET",
-            "ROLE_ADMIN_PASSWORD_RECOVERY", "ROLE_ADMIN_MFA_RECOVERY");
+    static final Set<String> ASSIGNABLE = Set.of("ROLE_SYSTEM_ADMIN", "ROLE_ADMIN_APP", "ROLE_ADMIN_AUDIT",
+            "ROLE_USER_OPERATOR", "ROLE_ADMIN_PASSWORD_RESET", "ROLE_ADMIN_PASSWORD_RECOVERY",
+            "ROLE_ADMIN_MFA_RECOVERY");
 }
