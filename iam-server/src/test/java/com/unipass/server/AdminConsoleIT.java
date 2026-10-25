@@ -96,7 +96,7 @@ class AdminConsoleIT {
         Mockito.when(accounts.roles(TARGET)).thenReturn(List.of("ROLE_USER_OPERATOR"));
         // The reserved authority is explicitly assignable but grants no role/audit/client capability.
         assertEquals(403, rejected(() -> console.requireConsole(userOperator)).getStatusCode().value());
-        assertEquals(403, rejected(() -> console.requireAuditReader(userOperator)).getStatusCode().value());
+        assertEquals(403, rejected(() -> console.requireAuditor(userOperator)).getStatusCode().value());
         Mockito.when(accounts.roles(TARGET)).thenReturn(List.of());
     }
 
