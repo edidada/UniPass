@@ -88,6 +88,18 @@ class AdminConsoleIT {
         catch (ResponseStatusException e) { return e; }
     }
 
+    @Test void reservedUserOperatorIsAssignableButGrantsNoConsoleCapability() {
+        console.change(operator(), TARGET, "GRANT", "ROLE_USER_OPERATOR", "预留用户操作员", "reserved-unit-key-001");
+        assertEquals(1, roles(TARGET, "ROLE_USER_OPERATOR"));
+        IdentityPrincipal userOperator = new IdentityPrincipal(TARGET, 5, now.get(), List.of("ROLE_USER_OPERATOR"),
+                now.get(), IdentityPrincipal.Method.PASSWORD, now.get(), UUID.randomUUID());
+        Mockito.when(accounts.roles(TARGET)).thenReturn(List.of("ROLE_USER_OPERATOR"));
+        // The reserved authority is explicitly assignable but grants no role/audit/client capability.
+        assertEquals(403, rejected(() -> console.requireConsole(userOperator)).getStatusCode().value());
+        assertEquals(403, rejected(() -> console.requireAuditReader(userOperator)).getStatusCode().value());
+        Mockito.when(accounts.roles(TARGET)).thenReturn(List.of());
+    }
+
     @Test void nonAdministratorIsRejectedBeforeAnyWrite() {
         IdentityPrincipal plain = new IdentityPrincipal(NON_ADMIN, 5, Instant.now(), List.of("ROLE_USER"), null,
                 IdentityPrincipal.Method.PASSWORD, Instant.now(), UUID.randomUUID());
