@@ -57,3 +57,4 @@ build
 **/node_modules/
 /output/
 /.playwright-cli/
+.codex
