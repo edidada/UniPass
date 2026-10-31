@@ -34,6 +34,29 @@ jobs:
         run: mvn --batch-mode --no-transfer-progress clean verify -Pintegration -Dtest.redis.executable=/usr/bin/redis-server
       # The frontend chain (npm ci -> vue-tsc -> vitest -> vite build) runs inside the iam-portal
       # reactor prior to iam-server, so package success already proves the Vue/TypeScript gates.
+      - name: Start iam-web and verify health
+        env:
+          UNIPASS_RP_ID: crm
+          UNIPASS_RP_ISSUER: http://localhost:8080
+          UNIPASS_RP_ORIGIN: http://localhost:8081
+          UNIPASS_RP_CLIENT_SECRET: test-only-rp-secret-0123456789abcdef
+          UNIPASS_RP_SESSION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+          UNIPASS_RP_REDIS_HOST: 127.0.0.1
+          UNIPASS_RP_REDIS_PORT: "6380"
+          UNIPASS_RP_REDIS_PASSWORD: test-only-redis
+          UNIPASS_RP_PORT: "8081"
+        run: |
+          redis-server --port 6380 --bind 127.0.0.1 --requirepass "$UNIPASS_RP_REDIS_PASSWORD" --save "" --appendonly no --daemonize yes
+          java -jar iam-web/target/iam-web-0.1.0-SNAPSHOT-exec.jar --server.address=127.0.0.1 --unipass.rp.local-http=true > /tmp/iam-web.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8081/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "iam-web failed to become healthy"
+          cat /tmp/iam-web.log
+          exit 1
       - name: Verify packaged portal assets and module dependency
         run: |
           EXEC_JAR=iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
