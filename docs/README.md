@@ -50,6 +50,7 @@
 | [40-审计字段级脱敏](40-审计字段级脱敏.md) |
 | [41-归档多实例选举](41-归档多实例选举.md) |
 | [42-停用吊销时延](42-停用吊销时延.md) |
+| [43-代码格式化与CI](43-代码格式化与CI.md) |
 | [依赖基线](dependencies.md) |
 | [业务接口 OpenAPI 3.1](openapi.json) |
 | [独立 RP/BFF 接口 OpenAPI 3.1](web-openapi.json) |
