@@ -53,8 +53,8 @@ java -jar iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar
 准备 [客户端配置示例](../examples/oidc-client.json)。机密客户端 secret 由密码学随机源生成 32–64 个可打印 ASCII 字符，经受保护环境注入 `UNIPASS_CLIENT_SECRET`；持久化为 bcrypt，不在 CLI 输出。公共 native/SPA 不设置 secret。重复 client_id 拒绝，不隐式覆盖。
 
 ```powershell
-java '-Dloader.main=com.unipass.server.ClientAdminCli' -cp iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar org.springframework.boot.loader.launch.PropertiesLauncher migrate
-java '-Dloader.main=com.unipass.server.ClientAdminCli' -cp iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar org.springframework.boot.loader.launch.PropertiesLauncher register examples/oidc-client.json
+java '-Dloader.main=com.test.examples.unipass.server.ClientAdminCli' -cp iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar org.springframework.boot.loader.launch.PropertiesLauncher migrate
+java '-Dloader.main=com.test.examples.unipass.server.ClientAdminCli' -cp iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar org.springframework.boot.loader.launch.PropertiesLauncher register examples/oidc-client.json
 ```
 
 CLI 只需要数据库配置，不启动 Web/Redis/目录。生产 callback 必须 HTTPS；native 允许 reverse-domain 私有 scheme。显式设置 `UNIPASS_ALLOW_LOCAL_CALLBACKS=true` 才允许精确注册 HTTP loopback，端口仍严格匹配。原生生产优先使用已认领的 HTTPS app links。

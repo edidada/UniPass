@@ -32,7 +32,7 @@ V9 触发器检查两个因素表新增/改变的密文头，拒绝与当前 wri
 使用已打包服务，不启动 Web、Redis 或 LDAP：
 
 ```powershell
-java '-Dloader.main=com.unipass.server.MfaKeyAdminCli' -cp iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar org.springframework.boot.loader.launch.PropertiesLauncher status
+java '-Dloader.main=com.test.examples.unipass.server.MfaKeyAdminCli' -cp iam-server/target/iam-server-0.1.0-SNAPSHOT-exec.jar org.springframework.boot.loader.launch.PropertiesLauncher status
 ```
 
 统一需要 `UNIPASS_DB_URL/USER/PASSWORD` 与当前 key 配置。变更命令还要求 `UNIPASS_OPERATOR_REF`、`UNIPASS_EVIDENCE_REF`，为 3–200/500 位审计引用，允许字母、数字及 `_.:@/-`。这是受信的离线数据库操作员边界，不新增 HTTP 管理入口，也不会自动验证工单的业务真实性。

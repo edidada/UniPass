@@ -13,5 +13,5 @@
     <dependency><groupId>com.test.examples</groupId><artifactId>iam-server</artifactId><version>${project.version}</version><scope>test</scope></dependency>
     <dependency><groupId>io.zonky.test</groupId><artifactId>embedded-postgres</artifactId><version>2.2.2</version><scope>test</scope></dependency>
   </dependencies>
-  <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId><version>3.5.16</version><configuration><classifier>exec</classifier><mainClass>com.unipass.web.WebApplication</mainClass></configuration><executions><execution><goals><goal>repackage</goal></goals></execution></executions></plugin></plugins></build>
+  <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId><version>3.5.16</version><configuration><classifier>exec</classifier><mainClass>com.test.examples.unipass.web.WebApplication</mainClass></configuration><executions><execution><goals><goal>repackage</goal></goals></execution></executions></plugin></plugins></build>
 </project>

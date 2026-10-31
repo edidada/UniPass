@@ -52,6 +52,7 @@
 | [42-停用吊销时延](42-停用吊销时延.md) |
 | [43-代码格式化与CI](43-代码格式化与CI.md) |
 | [44-本地iam-web启动与RP配置](44-本地iam-web启动与RP配置.md) |
+| [45-任务完成记录-groupid与包名迁移](45-任务完成记录-groupid与包名迁移.md) |
 | [依赖基线](dependencies.md) |
 | [业务接口 OpenAPI 3.1](openapi.json) |
 | [独立 RP/BFF 接口 OpenAPI 3.1](web-openapi.json) |

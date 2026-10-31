@@ -6,9 +6,9 @@ Push-Location $projectRoot
 try {
     & mvn -B -ntp -pl iam-server -am test '-Dtest=PortalContinuationsTest' '-Dsurefire.failIfNoSpecifiedTests=false'
     if ($LASTEXITCODE -ne 0) { throw 'Preview compilation and verification failed.' }
-    [xml]$report = Get-Content -Raw -LiteralPath 'iam-server/target/surefire-reports/TEST-com.unipass.server.PortalContinuationsTest.xml'
+    [xml]$report = Get-Content -Raw -LiteralPath 'iam-server/target/surefire-reports/TEST-com.test.examples.unipass.server.PortalContinuationsTest.xml'
     $previewClasspath = ($report.testsuite.properties.property | Where-Object { $_.name -eq 'java.class.path' }).value
     if ([string]::IsNullOrWhiteSpace($previewClasspath)) { throw 'Test classpath is missing.' }
-    & java -cp $previewClasspath com.unipass.server.PortalBrowserFixture (Join-Path $projectRoot 'output/playwright') $RedisExecutable
+    & java -cp $previewClasspath com.test.examples.unipass.server.PortalBrowserFixture (Join-Path $projectRoot 'output/playwright') $RedisExecutable
     if ($LASTEXITCODE -ne 0) { throw 'Preview fixture failed.' }
 } finally { Pop-Location }
