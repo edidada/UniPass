@@ -69,8 +69,8 @@
               <version>1.22.0</version>
               <style>GOOGLE</style>
             </googleJavaFormat>
-            <trimTrailingWhitespace/>
-            <endWithNewline/>
+            <trimTrailingWhitespace />
+            <endWithNewline />
           </java>
         </configuration>
         <executions>
