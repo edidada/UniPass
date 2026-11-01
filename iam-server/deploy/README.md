@@ -82,6 +82,21 @@ k3s kubectl apply -f unipass/k8s.yaml     # 部署前先把 image tag 换成 $TA
 - 改动 `UNIPASS_*` 后要 `rollout restart` 才生效；NodePort 冲突先查
   `k3s kubectl get svc -A | grep nodePort`。
 
+## 现场已知坑（首次实施实测，见 smoke 报告 2026-11-01）
+
+1. issuer 只能 https（非回环 http 会被 `SecurityConfiguration` 拒绝启动）。
+2. 目录 URL 必须 `ldaps://`；证书 SAN=DNS：ldap.unipass.svc.cluster.local；应用 JVM 信任
+   自建 CA（`unipass-signing/apptruststore.jks` + `JAVA_OPTS`）。
+3. osixia/openldap：默认双向 TLS（`LDAP_TLS_VERIFY_CLIENT=never`）、ConfigMap 只读 chown 崩
+   （initContainer 拷入 emptyDir）、k8s `LDAP_*` 环境变量冲突（`enableServiceLinks: false`）、
+   收尾删挂载目录（`LDAP_REMOVE_CONFIG_AFTER_SETUP=false`）。
+4. ldap Service 必须同时暴露 389+636（只写 389 时 636 无 kube-proxy 规则）。
+5. 登录错口令累计触发 30min/10min 锁（redis `unipass:login:*`）；改密 60s per-user 守卫
+   （`password_request_guard`）、MFA 失败 ≥5 次锁 30min（`mfa_totp.locked_until`）。
+6. 改密前置：recent password + recent MFA + `UNIPASS_PASSWORD_HISTORY_VERIFIED=true`；
+   请求体字段名 `old_password/new_password/confirm_password`。
+7. 管理台写接口一律要 `Idempotency-Key`；MFA 每次 enroll 换新基座 secret（只读一次）。
+
 ## 回滚
 
 - 应用：`k3s kubectl -n unipass rollout undo deploy/unipass-iam`（或 `set image ... $old_tag`）。

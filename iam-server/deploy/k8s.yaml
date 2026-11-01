@@ -64,6 +64,10 @@ spec:
           value: "OPENLDAP"
         - name: UNIPASS_LDAP_WRITABLE_CONFIRMED
           value: "true"
+        - name: UNIPASS_PASSWORD_HISTORY_VERIFIED   # unipass.password.history-verified：改密要求目录口令版本核验
+          value: "true"
+        - name: UNIPASS_RESET_HISTORY_VERIFIED      # unipass.password.reset-history-verified：管理员恢复口径
+          value: "true"
         - name: UNIPASS_SIGNING_STORE
           value: "/app/credentials/signing.p12"
         - name: UNIPASS_SIGNING_PASSWORD
