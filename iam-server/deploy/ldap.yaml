@@ -1,0 +1,107 @@
+# UniPass 私有 OpenLDAP（namespace: unipass）——登录/改密的目录依赖
+# 密码全部从 ldap-admin Secret 注入，本清单无明文。
+# 创建 Secret：kubectl -n unipass create secret generic ldap-admin --from-literal=admin-password '<pwd>'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ldap
+  namespace: unipass
+  labels: {app: ldap, project: unipass, tier: directory}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: ldap}}
+  template:
+    metadata: {labels: {app: ldap}}
+    spec:
+      enableServiceLinks: false   # osixia 的 LDAP_* 前缀与 k8s service env 冲突（LDAP_PORT 等）
+      imagePullSecrets: [{name: galaxy-registry}]
+      initContainers:
+      - name: ldif-init
+        image: registry.galaxy.local:30500/base/alpine:3.20
+        imagePullPolicy: IfNotPresent
+        command: ["sh","-c","cp /ldif-src/* /ldif-dst/ && chmod 0644 /ldif-dst/* && cp /tls-secret/* /tls-dst/ && chmod 0644 /tls-dst/ca.crt /tls-dst/ldap.crt && chmod 0600 /tls-dst/ldap.key && ls /ldif-dst /tls-dst"]
+        volumeMounts:
+        - {name: ldif-src, mountPath: /ldif-src, readOnly: true}
+        - {name: ldif, mountPath: /ldif-dst}
+        - {name: tls-src, mountPath: /tls-secret, readOnly: true}
+        - {name: tls, mountPath: /tls-dst}
+      containers:
+      - name: ldap
+        image: registry.galaxy.local:30500/base/openldap:1.5.0
+        imagePullPolicy: IfNotPresent
+        ports: [{containerPort: 389}]
+        env:
+        - {name: LDAP_ORGANISATION, value: "UniPass Lab"}
+        - {name: LDAP_DOMAIN, value: "unipass.lab"}        # base dn = dc=unipass,dc=lab
+        - name: LDAP_ADMIN_PASSWORD
+          valueFrom: {secretKeyRef: {name: ldap-admin, key: admin-password}}
+        - name: LDAP_CONFIG_PASSWORD
+          valueFrom: {secretKeyRef: {name: ldap-admin, key: admin-password}}
+        - {name: LDAP_TLS, value: "true"}
+        - {name: LDAP_REMOVE_CONFIG_AFTER_SETUP, value: "false"}   # 持久化配置后不要再删自定义 ldif 挂载卷
+        - {name: LDAP_TLS_CRT_FILENAME, value: "ldap.crt"}
+        - {name: LDAP_TLS_KEY_FILENAME, value: "ldap.key"}
+        - {name: LDAP_TLS_CA_CRT_FILENAME, value: "ca.crt"}   # 证书部署到 /container/service/slapd/assets/certs（osixia 1.5.0 约定）
+        - {name: LDAP_TLS_VERIFY_CLIENT, value: "never"}   # osixia 默认 demand(双向 TLS),UniPass 客户端不带证书
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {memory: 512Mi}
+        readinessProbe:
+          exec: {command: ["sh", "-c", "ldapsearch -x -H ldap://localhost:389 -D 'cn=admin,dc=unipass,dc=lab' -w \"$LDAP_ADMIN_PASSWORD\" -b 'dc=unipass,dc=lab' '(objectClass=*)' dn >/dev/null"]}
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          tcpSocket: {port: 389}
+          periodSeconds: 15
+        volumeMounts:
+        - {name: ldif, mountPath: /container/service/slapd/assets/config/bootstrap/ldif/custom}
+        - {name: tls, mountPath: /container/service/slapd/assets/certs}
+        - {name: data, mountPath: /var/lib/ldap}
+        - {name: config, mountPath: /etc/ldap/slapd.d}
+      volumes:
+      - name: ldif-src
+        configMap: {name: ldap-bootstrap-ldif}
+      - name: ldif
+        emptyDir: {}
+      - name: tls-src
+        secret: {secretName: ldap-tls-ish}      # install 时创建（见 README）
+      - name: tls
+        emptyDir: {}
+      - name: data
+        persistentVolumeClaim: {claimName: ldap-data}
+      - name: config
+        persistentVolumeClaim: {claimName: ldap-config}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ldap-bootstrap-ldif
+  namespace: unipass
+data:
+  00-skeleton.ldif: |
+    dn: ou=people,dc=unipass,dc=lab
+    objectClass: organizationalUnit
+    ou: people
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ldap
+  namespace: unipass
+spec:
+  type: ClusterIP
+  selector: {app: ldap}
+  ports:
+  - {name: ldap, port: 389, targetPort: 389}
+  - {name: ldaps, port: 636, targetPort: 636}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: ldap-data, namespace: unipass}
+spec: {accessModes: [ReadWriteOnce], storageClassName: local-path, resources: {requests: {storage: 1Gi}}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: ldap-config, namespace: unipass}
+spec: {accessModes: [ReadWriteOnce], storageClassName: local-path, resources: {requests: {storage: 256Mi}}}

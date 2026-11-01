@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# UniPass IAM 部署清单（k3s@R630，namespace: unipass）
+# 约定：
+#   - Redis 复用 middleware/redis（ClusterIP redis.middleware.svc.cluster.local:6379），
+#     密码复制进本 ns 的 unipass-redis secret（secretKeyRef 不能跨 ns）。
+#   - PostgreSQL 用共享的 middleware/postgres（见 r630-proxmox8/cicd/middleware/postgres.yaml）。
+#   - OpenLDAP 为 UniPass 私有依赖，放本 ns（ldap.yaml）。
+#   - 密码/密钥全部走 Secret，本清单不含明文。安装命令见 README.md。
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unipass-iam
+  namespace: unipass
+  labels: {app: unipass-iam, project: unipass, tier: app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: unipass-iam}}
+  template:
+    metadata: {labels: {app: unipass-iam}}
+    spec:
+      imagePullSecrets: [{name: galaxy-registry}]
+      containers:
+      - name: iam-server            # set image 用容器名，不是 deployment 名
+        image: registry.galaxy.local:30500/unipass/iam-server:git-0b7f3fa
+        imagePullPolicy: IfNotPresent
+        ports: [{containerPort: 8080}]
+        env:
+        - name: UNIPASS_PORT
+          value: "8080"
+        - name: UNIPASS_ISSUER
+          value: "https://unipass.lab"   # Traefik IngressRoute TLS 终结（见文末 IngressRoute）
+        - name: UNIPASS_DB_URL
+          value: "jdbc:postgresql://postgres.middleware.svc.cluster.local:5432/unipass"
+        - name: UNIPASS_DB_USER
+          value: "unipass"
+        - name: UNIPASS_DB_PASSWORD
+          valueFrom: {secretKeyRef: {name: unipass-db, key: db-password}}
+        - name: UNIPASS_REDIS_HOST
+          value: "redis.middleware.svc.cluster.local"
+        - name: UNIPASS_REDIS_PORT
+          value: "6379"
+        - name: UNIPASS_REDIS_PASSWORD
+          valueFrom: {secretKeyRef: {name: unipass-redis, key: redis-password}}
+        - name: UNIPASS_REDIS_TLS
+          value: "false"
+        - name: UNIPASS_FEISHU_ENABLED
+          value: "false"
+        - name: UNIPASS_LDAP_URL
+          value: "ldaps://ldap.unipass.svc.cluster.local:636"   # 目录网关强制 ldaps（DirectoryConfig 校验）
+        - name: JAVA_OPTS
+          value: "-Djavax.net.ssl.trustStore=/app/credentials/apptruststore.jks -Djavax.net.ssl.trustStorePassword=changeit"   # 信任 UniPass Lab Root CA（secret: unipass-signing）
+        - name: UNIPASS_LDAP_BASE_DN
+          value: "dc=unipass,dc=lab"
+        - name: UNIPASS_LDAP_READ_DN
+          value: "cn=admin,dc=unipass,dc=lab"
+        - name: UNIPASS_LDAP_READ_PASSWORD
+          valueFrom: {secretKeyRef: {name: ldap-admin, key: admin-password}}
+        - name: UNIPASS_LDAP_WRITE_DN
+          value: "cn=admin,dc=unipass,dc=lab"
+        - name: UNIPASS_LDAP_WRITE_PASSWORD
+          valueFrom: {secretKeyRef: {name: ldap-admin, key: admin-password}}
+        - name: UNIPASS_DIRECTORY_TYPE
+          value: "OPENLDAP"
+        - name: UNIPASS_LDAP_WRITABLE_CONFIRMED
+          value: "true"
+        - name: UNIPASS_SIGNING_STORE
+          value: "/app/credentials/signing.p12"
+        - name: UNIPASS_SIGNING_PASSWORD
+          valueFrom: {secretKeyRef: {name: unipass-signing, key: store-password}}
+        - name: UNIPASS_SIGNING_ALIAS
+          value: "current"
+        - name: UNIPASS_MFA_KEY
+          valueFrom: {secretKeyRef: {name: unipass-mfa, key: mfa-key}}
+        readinessProbe:
+          httpGet: {path: /portal/, port: 8080}
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 30      # 首次启动要跑 Flyway V1..V20，放宽到 5 分钟
+        livenessProbe:
+          httpGet: {path: /portal/, port: 8080}
+          periodSeconds: 15
+          failureThreshold: 6
+        resources:
+          requests: {cpu: 100m, memory: 512Mi}
+          limits: {memory: 1Gi}
+        volumeMounts:
+        - {name: credentials, mountPath: /app/credentials, readOnly: true}
+      volumes:
+      - name: credentials
+        secret: {secretName: unipass-signing}
+---
+# 应用本身就是公开入口 /portal/，无独立前端，此 Service 即唯一入口
+# additional: 追加 traefik IngressRoute（issuer https://unipass.lab 挂在这里）
+apiVersion: v1
+kind: Service
+metadata:
+  name: unipass-iam
+  namespace: unipass
+  labels: {app: unipass-iam}
+spec:
+  type: NodePort
+  selector: {app: unipass-iam}
+  ports: [{port: 80, targetPort: 8080, nodePort: 30083}]
+---
+# TLS 终结在 traefik（k3s 自带 default 自签证书；测试用 curl -k）
+# 生产要求：换专用证书后 issuer 域名保持一致
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: unipass-iam
+  namespace: unipass
+spec:
+  entryPoints: [websecure]
+  routes:
+  - match: Host(`unipass.lab`) && PathPrefix(`/`)
+    kind: Rule
+    services: [{name: unipass-iam, port: 80}]
